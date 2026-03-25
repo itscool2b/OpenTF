@@ -29,6 +29,9 @@ COMMANDS = [
     ("/logout", "Clear stored credentials"),
     ("/provider", "Switch LLM provider (anthropic/openai/ollama)"),
     ("/skill", "Manage skills (list/install/export/remove)"),
+    ("/theme", "Switch color theme"),
+    ("/copy", "Copy last response to clipboard"),
+    ("/export", "Export conversation to markdown file"),
     ("/clear", "Clear the output"),
     ("/exit", "Quit OpenTF"),
 ]

@@ -49,6 +49,9 @@ HELP_TEXT = (
     f"  [{_A}]/model[/]      Switch model\n"
     f"  [{_A}]/provider[/]   Switch LLM provider\n"
     f"  [{_A}]/skill[/]      Manage skills\n"
+    f"  [{_A}]/theme[/]      Switch color theme\n"
+    f"  [{_A}]/copy[/]       Copy last response\n"
+    f"  [{_A}]/export[/]     Export conversation\n"
     f"  [{_A}]/undo[/]       Undo last file change\n"
     f"  [{_A}]/review[/]     Toggle file review\n"
     f"  [{_A}]/compact[/]    Compress history\n"
@@ -1534,21 +1537,28 @@ class OpenTFApp(App):
 
 def main() -> None:
     import sys as _sys
+    import asyncio as _asyncio
 
-    # Headless mode: if --non-interactive/-n or --prompt/-p is given, skip TUI
+    # Headless single-shot mode
     if any(
         flag in _sys.argv
         for flag in ("--non-interactive", "-n", "--prompt", "-p")
     ):
-        import asyncio as _asyncio
         from opentf.cli.headless import parse_args, run_headless
 
         args = parse_args()
         exit_code = _asyncio.run(run_headless(args))
         raise SystemExit(exit_code)
 
-    app = OpenTFApp()
-    app.run()
+    # Full Textual TUI (opt-in)
+    if "--tui" in _sys.argv:
+        app = OpenTFApp()
+        app.run()
+        return
+
+    # Default: interactive REPL (like Claude Code / OpenCode)
+    from opentf.cli.repl import run_repl
+    _asyncio.run(run_repl())
 
 
 if __name__ == "__main__":
