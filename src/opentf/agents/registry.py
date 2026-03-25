@@ -30,6 +30,14 @@ class AgentRegistry:
         """Get an agent by name."""
         return self._agents.get(name)
 
+    def unregister(self, name: str) -> bool:
+        """Remove an agent by name. Returns True if found and removed."""
+        if name in self._agents:
+            del self._agents[name]
+            log.info("Unregistered agent: %s", name)
+            return True
+        return False
+
     def find_for_task(self, task: Task) -> BaseAgent | None:
         """Find the first specialist that can handle a given task."""
         for agent in self._agents.values():

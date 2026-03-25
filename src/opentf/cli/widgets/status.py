@@ -7,15 +7,12 @@ import time
 from textual.widgets import Static
 
 from opentf.cli.theme import COLORS, MODEL_COLORS, SONNET_INPUT_PRICE, SONNET_OUTPUT_PRICE
+from opentf.llm.registry import get_model_short_name
 
 
 def _model_short(model: str) -> str:
     """Extract short name from model ID."""
-    if "opus" in model:
-        return "opus"
-    if "haiku" in model:
-        return "haiku"
-    return "sonnet"
+    return get_model_short_name(model)
 
 
 class HeaderBar(Static):
@@ -35,6 +32,7 @@ class HeaderBar(Static):
         self._model = "claude-sonnet-4-20250514"
         self._tokens = 0
         self._cost = 0.0
+        self._rate = 0.0
         self._elapsed = ""
         self._timer_start: float = 0.0
         self._elapsed_timer = None
@@ -71,6 +69,10 @@ class HeaderBar(Static):
         self._cost = cost
         self._refresh()
 
+    def update_rate(self, rate: float) -> None:
+        self._rate = rate
+        self._refresh()
+
     def _tick_elapsed(self) -> None:
         """Update elapsed display every second."""
         elapsed = time.monotonic() - self._timer_start
@@ -100,6 +102,9 @@ class HeaderBar(Static):
         # Cost
         if self._cost > 0:
             parts.append(f"[{COLORS['text_dim']}]${self._cost:.4f}[/]")
+        # $/hr rate
+        if self._rate > 0:
+            parts.append(f"[{COLORS['text_dim']}]${self._rate:.2f}/hr[/]")
         # Elapsed
         if self._elapsed:
             parts.append(f"[{COLORS['text_muted']}]{self._elapsed}[/]")

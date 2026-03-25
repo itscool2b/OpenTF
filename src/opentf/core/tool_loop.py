@@ -201,7 +201,9 @@ class ToolLoop:
                         "content": result_str,
                     })
                 except ApprovalRequired as req:
-                    approved = await self._request_approval(req.command, tool_id)
+                    approved = await self._request_approval(
+                        req.command, tool_id, diff_text=req.diff_text,
+                    )
                     if approved:
                         # Re-call handler with approval flag
                         try:
@@ -249,7 +251,7 @@ class ToolLoop:
         log.warning("ToolLoop hit max iterations (%d)", self.max_iterations)
         return "(Tool loop reached maximum iterations)", total_tokens
 
-    async def _request_approval(self, command: str, tool_id: str) -> bool:
+    async def _request_approval(self, command: str, tool_id: str, diff_text: str | None = None) -> bool:
         """Request user approval for a command via bus.
 
         User can respond: yes (once), no (skip), always (session-wide allow).
@@ -286,7 +288,7 @@ class ToolLoop:
         await self.bus.publish(Message(
             type=MessageType.APPROVAL_REQUESTED,
             source=self.source,
-            payload={"command": command, "tool_id": tool_id},
+            payload={"command": command, "tool_id": tool_id, "diff_text": diff_text},
         ))
 
         try:

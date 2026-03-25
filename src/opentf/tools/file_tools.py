@@ -7,6 +7,7 @@ command allowlists and approval for dangerous operations.
 from __future__ import annotations
 
 import asyncio
+import difflib
 import logging
 import subprocess
 from pathlib import Path
@@ -18,8 +19,9 @@ log = logging.getLogger(__name__)
 class ApprovalRequired(Exception):
     """Raised when a command needs user approval before execution."""
 
-    def __init__(self, command: str) -> None:
+    def __init__(self, command: str, diff_text: str | None = None) -> None:
         self.command = command
+        self.diff_text = diff_text
         super().__init__(f"Approval required for: {command}")
 
 
@@ -289,8 +291,18 @@ async def handle_write_file(input_data: dict[str, Any]) -> str:
     content = input_data["content"]
 
     if _review_mode and not input_data.get("_approved"):
-        preview = content[:300].replace("\n", "\n    ")
-        raise ApprovalRequired(f"write {path} ({len(content)} chars)\n    {preview}")
+        old = path.read_text(errors="replace") if path.exists() and path.is_file() else ""
+        diff_lines = list(difflib.unified_diff(
+            old.splitlines(keepends=True), content.splitlines(keepends=True),
+            fromfile=str(path), tofile=str(path), lineterm="",
+        ))
+        diff_text = "\n".join(diff_lines[:80])
+        if len(diff_lines) > 80:
+            diff_text += f"\n... ({len(diff_lines) - 80} more lines)"
+        raise ApprovalRequired(
+            f"write {path} ({len(content)} chars)",
+            diff_text=diff_text or "(new file)",
+        )
 
     _backup_file(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -310,11 +322,19 @@ async def handle_edit_file(input_data: dict[str, Any]) -> str:
         return "No changes needed -- old_text and new_text are identical"
 
     if _review_mode and not input_data.get("_approved"):
-        old_lines = old_text[:200].replace("\n", "\n    - ")
-        new_lines = new_text[:200].replace("\n", "\n    + ")
-        raise ApprovalRequired(
-            f"edit {path}\n    - {old_lines}\n    + {new_lines}"
-        )
+        if path.exists() and path.is_file():
+            current = path.read_text(errors="replace")
+            proposed = current.replace(old_text, new_text, 1)
+            diff_lines = list(difflib.unified_diff(
+                current.splitlines(keepends=True), proposed.splitlines(keepends=True),
+                fromfile=str(path), tofile=str(path), lineterm="",
+            ))
+            diff_text = "\n".join(diff_lines[:80])
+            if len(diff_lines) > 80:
+                diff_text += f"\n... ({len(diff_lines) - 80} more lines)"
+        else:
+            diff_text = f"(file not found: {path})"
+        raise ApprovalRequired(f"edit {path}", diff_text=diff_text)
     if not path.exists():
         return f"Error: file not found: {path}"
     if not path.is_file():

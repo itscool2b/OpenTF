@@ -21,9 +21,19 @@ COLORS = {
 
 # Model badge colors
 MODEL_COLORS = {
-    "opus":   "#fabd2f",   # bright yellow (warm gold)
-    "sonnet": "#d3869b",   # bright purple
-    "haiku":  "#8ec07c",   # bright aqua
+    # Anthropic
+    "opus":       "#fabd2f",   # bright yellow (warm gold)
+    "sonnet":     "#d3869b",   # bright purple
+    "haiku":      "#8ec07c",   # bright aqua
+    # OpenAI
+    "gpt-4o":     "#74b9ff",   # bright blue
+    "gpt-4o-mini":"#a29bfe",   # soft purple
+    "o1":         "#fd79a8",   # pink
+    # Ollama / local
+    "llama3.1":       "#55efc4",   # mint
+    "codellama":      "#00cec9",   # teal
+    "mistral":        "#ffeaa7",   # pale yellow
+    "qwen2.5-coder":  "#81ecec",   # light cyan
 }
 
 # Spinner frames
@@ -34,11 +44,21 @@ SPINNERS = {
     "error":      ["✗"],
 }
 
-# Per-model pricing (per million tokens)
+# Per-model pricing (per million tokens) -- keyed by short name
 MODEL_PRICING = {
+    # Anthropic
     "opus":   {"input": 15.0, "output": 75.0},
     "sonnet": {"input": 3.0,  "output": 15.0},
     "haiku":  {"input": 0.80, "output": 4.0},
+    # OpenAI
+    "gpt-4o":      {"input": 2.50, "output": 10.0},
+    "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+    "o1":          {"input": 15.0, "output": 60.0},
+    # Ollama (local, free)
+    "llama3.1":       {"input": 0.0, "output": 0.0},
+    "codellama":      {"input": 0.0, "output": 0.0},
+    "mistral":        {"input": 0.0, "output": 0.0},
+    "qwen2.5-coder":  {"input": 0.0, "output": 0.0},
 }
 
 # Backward compat aliases

@@ -79,6 +79,13 @@ class HybridRetriever:
         """Call after storing new memories to trigger BM25 rebuild on next search."""
         self._bm25_stale = True
 
+    async def close(self) -> None:
+        """Release resources."""
+        await self.store.close()
+        self._bm25 = None
+        self._corpus.clear()
+        self._corpus_ids.clear()
+
     @staticmethod
     def _reciprocal_rank_fusion(
         *result_lists: list[MemoryEntry],

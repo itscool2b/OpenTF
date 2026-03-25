@@ -47,6 +47,8 @@ HELP_TEXT = (
     f"  [{_A}]/plan[/]       Planning mode\n"
     f"  [{_A}]/janitor[/]    Code quality scan\n"
     f"  [{_A}]/model[/]      Switch model\n"
+    f"  [{_A}]/provider[/]   Switch LLM provider\n"
+    f"  [{_A}]/skill[/]      Manage skills\n"
     f"  [{_A}]/undo[/]       Undo last file change\n"
     f"  [{_A}]/review[/]     Toggle file review\n"
     f"  [{_A}]/compact[/]    Compress history\n"
@@ -61,11 +63,10 @@ HELP_TEXT = (
     f"  [{_D}]Esc[/] cancel   [{_D}]Ctrl+C[/] quit   [{_D}]Ctrl+L[/] clear"
 )
 
-ANTHROPIC_MODELS = {
-    "opus": "claude-opus-4-20250514",
-    "sonnet": "claude-sonnet-4-20250514",
-    "haiku": "claude-haiku-4-5-20251001",
-}
+from opentf.llm.registry import get_models, get_default_model, resolve_model, get_model_short_name
+
+# Legacy compat alias
+ANTHROPIC_MODELS = get_models("anthropic")
 
 
 class OpenTFApp(App):
@@ -114,8 +115,10 @@ class OpenTFApp(App):
         llm_cfg = self._config.get("llm", {})
 
         self.credentials = CredentialManager()
+        provider = llm_cfg.get("provider", "anthropic")
         self.llm = LLMClient(
-            model=llm_cfg.get("model", "claude-sonnet-4-20250514"),
+            provider_name=provider,
+            model=llm_cfg.get("model", get_default_model(provider)),
             max_tokens=llm_cfg.get("max_tokens", 8192),
             temperature=llm_cfg.get("temperature", 0.7),
         )
@@ -140,6 +143,9 @@ class OpenTFApp(App):
         self._active_worker = None
         self._taskforce_pending: bool = False
         self._taskforce_auto: bool = False
+
+        from opentf.core.cost_tracker import CostTracker
+        self._cost_tracker = CostTracker()
 
     def compose(self) -> ComposeResult:
         yield HeaderBar(id="header")
@@ -309,6 +315,69 @@ class OpenTFApp(App):
             + u.cache_read_tokens * (prices["input"] * 0.1) / 1_000_000
         )
 
+    # --- Skill management ---
+
+    async def _handle_skill_command(self, subcmd: str, arg: str) -> None:
+        from opentf.core.skill_manager import SkillManager
+        manager = SkillManager()
+        output = self.query_one(OutputDisplay)
+
+        if subcmd == "list":
+            skills = manager.list_skills()
+            if not skills:
+                await output.append_text("No skills installed.")
+                return
+            lines = ["[bold]Installed Skills[/]\n"]
+            for s in skills:
+                tags = ", ".join(s["tags"]) if s["tags"] else ""
+                line = (
+                    f"  [{_A}]{s['name']}[/]  v{s['version']}"
+                    f"  [{_D}]{s['description'][:50]}[/]"
+                )
+                if tags:
+                    line += f"  [{_D}]tags: {tags}[/]"
+                lines.append(line)
+            await output.append_text("\n".join(lines))
+
+        elif subcmd == "install":
+            if not arg:
+                await output.append_text(f"Usage: [{_A}]/skill install <url_or_path>[/]")
+                return
+            ok, msg = await manager.install(arg)
+            if ok:
+                skill_builder = self.registry.get("skill_builder")
+                if skill_builder and hasattr(skill_builder, "load_saved_skills"):
+                    skill_builder.load_saved_skills()
+                await output.append_text(f"[{_S}]{msg}[/]")
+            else:
+                await output.append_text(f"[{_E}]{msg}[/]")
+
+        elif subcmd == "export":
+            if not arg:
+                await output.append_text(f"Usage: [{_A}]/skill export <name>[/]")
+                return
+            yaml_text = manager.export_skill(arg)
+            if yaml_text:
+                await output.append_text(f"```yaml\n{yaml_text}```")
+            else:
+                await output.append_text(f"Skill not found: {arg}")
+
+        elif subcmd == "remove":
+            if not arg:
+                await output.append_text(f"Usage: [{_A}]/skill remove <name>[/]")
+                return
+            if manager.remove_skill(arg):
+                self.registry.unregister(arg)
+                await output.append_text(f"Removed skill '{arg}'.")
+            else:
+                await output.append_text(f"Skill not found: {arg}")
+
+        else:
+            await output.append_text(
+                f"Unknown: /skill {subcmd}. "
+                f"Try [{_A}]list[/] [{_A}]install[/] [{_A}]export[/] [{_A}]remove[/]"
+            )
+
     # --- Bus messages -> widgets ---
 
     async def _on_bus_message(self, message: Message) -> None:
@@ -400,19 +469,41 @@ class OpenTFApp(App):
         elif message.type == MessageType.APPROVAL_REQUESTED:
             cmd = message.payload.get("command", "?")
             tool_id = message.payload.get("tool_id", "")
+            diff_text = message.payload.get("diff_text")
             self._pending_approval = {"tool_id": tool_id, "command": cmd}
             cmd_prefix = cmd.strip().split()[0] if cmd.strip() else cmd
             try:
                 output = self.query_one(OutputDisplay)
-                if cmd.startswith(("write ", "edit ")):
-                    header = "[bold]File change?[/]"
+                prompt_line = (
+                    f"  [{_S}]y[/] yes   [{_E}]n[/] no   "
+                    f"[{_A}]a[/] always allow [{_D}]{cmd_prefix}[/]"
+                )
+                if diff_text:
+                    colored = []
+                    for line in diff_text.split("\n"):
+                        esc = line.replace("[", "\\[")
+                        if line.startswith("+++") or line.startswith("---"):
+                            colored.append(f"[bold {_D}]{esc}[/]")
+                        elif line.startswith("@@"):
+                            colored.append(f"[bold cyan]{esc}[/]")
+                        elif line.startswith("+"):
+                            colored.append(f"[{_S}]{esc}[/]")
+                        elif line.startswith("-"):
+                            colored.append(f"[{_E}]{esc}[/]")
+                        else:
+                            colored.append(f"[{_D}]{esc}[/]")
+                    diff_display = "\n".join(colored)
+                    self.call_after_refresh(
+                        output.append_text,
+                        f"\n[bold]File change?[/] [{_D}]{cmd}[/]\n\n"
+                        f"{diff_display}\n\n{prompt_line}",
+                    )
                 else:
                     header = "[bold]Run?[/]"
-                self.call_after_refresh(
-                    output.append_text,
-                    f"\n{header}\n[{_D}]{cmd}[/]\n\n"
-                    f"  [{_S}]y[/] yes   [{_E}]n[/] no   [{_A}]a[/] always allow [{_D}]{cmd_prefix}[/]",
-                )
+                    self.call_after_refresh(
+                        output.append_text,
+                        f"\n{header}\n[{_D}]{cmd}[/]\n\n{prompt_line}",
+                    )
             except Exception:
                 pass
             log_panel.log_event(source, f"approval: {cmd[:60]}", "tool")
@@ -595,15 +686,17 @@ class OpenTFApp(App):
             await output.append_text(HELP_TEXT)
 
         elif command == "/status":
-            source = self.credentials.resolve_source()
-            key = self.credentials.resolve_api_key()
+            provider = self.llm.provider_name
+            source = self.credentials.resolve_source(provider)
+            key = self.credentials.resolve_api_key(provider)
             redacted = self.credentials.redact_key(key) if key else "(none)"
             await output.append_text(
                 f"[bold]Status[/]\n"
-                f"  auth    [{_D}]{source}[/]\n"
-                f"  key     [{_D}]{redacted}[/]\n"
-                f"  model   [{_D}]{self.llm.model}[/]\n"
-                f"  tokens  [{_D}]{self.llm.usage.total:,}[/]"
+                f"  provider [{_D}]{provider}[/]\n"
+                f"  auth     [{_D}]{source}[/]\n"
+                f"  key      [{_D}]{redacted}[/]\n"
+                f"  model    [{_D}]{self.llm.model}[/]\n"
+                f"  tokens   [{_D}]{self.llm.usage.total:,}[/]"
             )
 
         elif command == "/cost":
@@ -633,36 +726,58 @@ class OpenTFApp(App):
             cost_lines.append(f"  [bold]total[/]                    [bold]${total_cost:.4f}[/]")
             await output.append_text("\n".join(cost_lines))
 
+        elif command == "/provider":
+            parts = cmd.split(maxsplit=1)
+            if len(parts) < 2:
+                await output.append_text(
+                    f"Current provider: [bold]{self.llm.provider_name}[/]\n"
+                    f"  Available: [{_A}]anthropic[/], [{_A}]openai[/], [{_A}]ollama[/]"
+                )
+            else:
+                name = parts[1].strip().lower()
+                if name not in ("anthropic", "openai", "ollama"):
+                    await output.append_text(
+                        f"Unknown provider: {name}. "
+                        f"Available: [{_A}]anthropic[/], [{_A}]openai[/], [{_A}]ollama[/]"
+                    )
+                else:
+                    self.llm.provider_name = name
+                    self.llm.model = get_default_model(name)
+                    self.llm.reset_client()
+                    self.query_one(HeaderBar).update_model(self.llm.model)
+                    await output.append_text(
+                        f"Switched to [bold]{name}[/] (model: {get_model_short_name(self.llm.model)})"
+                    )
+
         elif command == "/model":
             parts = cmd.split(maxsplit=1)
             if len(parts) < 2:
-                # Show interactive selector
                 try:
                     selector = self.query_one(ModelSelector)
-                    selector.show(self.llm.model)
+                    selector.show(self.llm.model, provider=self.llm.provider_name)
                 except Exception:
                     pass
             else:
                 name = parts[1].strip().lower()
-                model_id = ANTHROPIC_MODELS.get(name)
+                provider = self.llm.provider_name
+                model_id = resolve_model(provider, name)
                 if not model_id:
-                    if name in ANTHROPIC_MODELS.values():
-                        model_id = name
-                    elif any(name in v for v in ANTHROPIC_MODELS.values()):
-                        for v in ANTHROPIC_MODELS.values():
-                            if name in v:
-                                model_id = v
-                                break
-                if model_id:
+                    available = get_models(provider)
+                    models_list = ", ".join(f"[{_A}]{k}[/]" for k in available)
+                    await output.append_text(
+                        f"Unknown model: {name}. Available ({provider}): {models_list}"
+                    )
+                else:
                     self.llm.model = model_id
-                    short = next((k for k, v in ANTHROPIC_MODELS.items() if v == model_id), model_id)
+                    short = get_model_short_name(model_id)
                     self.query_one(HeaderBar).update_model(model_id)
                     await output.append_text(f"Switched to [bold]{short}[/] [{_D}]{model_id}[/]")
-                else:
-                    models_list = ", ".join(f"[{_A}]{k}[/]" for k in ANTHROPIC_MODELS)
-                    await output.append_text(
-                        f"Unknown model: {parts[1].strip()}. Available: {models_list}"
-                    )
+
+        elif command == "/skill":
+            parts = cmd.split(maxsplit=2)
+            subcmd = parts[1].strip().lower() if len(parts) > 1 else "list"
+            arg = parts[2].strip() if len(parts) > 2 else ""
+            await self._handle_skill_command(subcmd, arg)
 
         elif command == "/compact":
             if len(self.conversation_history) <= 5:
@@ -723,6 +838,8 @@ class OpenTFApp(App):
             await output.append_stream(chunk)
 
         try:
+            self._cost_tracker.start_task(self.llm.usage.total, self._calculate_cost())
+
             results = await self.orchestrator.run(
                 user_input,
                 conversation_history=self.conversation_history,
@@ -764,8 +881,13 @@ class OpenTFApp(App):
                     await output.append_text(f"[{_E}]Error:[/] {error_text}")
 
             header.stop_timer()
+            cost = self._calculate_cost()
             header.update_tokens(self.llm.usage.total)
-            header.update_cost(self._calculate_cost())
+            header.update_cost(cost)
+            header.update_rate(self._cost_tracker.dollars_per_hour(cost))
+            self._cost_tracker.end_task(
+                user_input[:60], self.llm.usage.total, cost, self.llm.model,
+            )
 
             try:
                 self.query_one(ActivityBar).clear_agents()
@@ -1407,6 +1529,20 @@ class OpenTFApp(App):
 
 
 def main() -> None:
+    import sys as _sys
+
+    # Headless mode: if --non-interactive/-n or --prompt/-p is given, skip TUI
+    if any(
+        flag in _sys.argv
+        for flag in ("--non-interactive", "-n", "--prompt", "-p")
+    ):
+        import asyncio as _asyncio
+        from opentf.cli.headless import parse_args, run_headless
+
+        args = parse_args()
+        exit_code = _asyncio.run(run_headless(args))
+        raise SystemExit(exit_code)
+
     app = OpenTFApp()
     app.run()
 

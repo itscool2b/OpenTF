@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
+import urllib.parse
 
 from opentf.agents.base import AgentResult, AgentRole, BaseAgent, GuardrailPhase
 from opentf.models.context import AgentContext
@@ -37,6 +39,9 @@ INJECTION_PATTERNS = [
     "ignore guardrails",
     "developer mode",
     "dan mode",
+    "from now on",
+    "your new role",
+    "respond only in",
 ]
 
 # Path traversal patterns
@@ -46,6 +51,8 @@ PATH_TRAVERSAL_PATTERNS = [
     re.compile(r"/proc/self/"),
     re.compile(r"~root/"),
     re.compile(r"C:\\Windows\\System32", re.IGNORECASE),
+    re.compile(r"\.\.%2[fF]"),         # URL-encoded ../
+    re.compile(r"%2[eE]%2[eE]"),       # URL-encoded ..
 ]
 
 # Command injection patterns (dangerous when fed to shells)
@@ -60,6 +67,12 @@ COMMAND_INJECTION_PATTERNS = [
     re.compile(r";\s*dd\s+if="),
     re.compile(r"mkfs\.\w+"),
     re.compile(r":(){ :\|:& };:"),  # fork bomb
+    re.compile(r"\|\s*bash"),          # pipe to bash
+    re.compile(r"\|\s*sh\s"),          # pipe to sh
+    re.compile(r"\|\s*curl\s"),        # pipe to curl
+    re.compile(r"\|\s*wget\s"),        # pipe to wget
+    re.compile(r"bash\s+-c\s+"),       # bash -c execution
+    re.compile(r"sh\s+-c\s+"),         # sh -c execution
 ]
 
 # Exfiltration patterns (requesting internal state)
@@ -73,6 +86,8 @@ EXFILTRATION_PATTERNS = [
     "show me the api key",
     "output the credentials",
     "what is the secret key",
+    "dump your config",
+    "export your memory",
 ]
 
 
@@ -90,7 +105,11 @@ class SecurityAgent(BaseAgent):
 
     async def process(self, context: AgentContext) -> AgentResult:
         text = context.task.description
-        text_lower = text.lower()
+        # Strip zero-width and invisible characters, then normalize Unicode
+        _invisible = str.maketrans("", "", "\u200b\u200c\u200d\u2060\ufeff")
+        text_normalized = unicodedata.normalize("NFKC", text.translate(_invisible))
+        # Decode URL encoding (defeat %2f bypasses)
+        text_lower = urllib.parse.unquote(text_normalized).lower()
 
         # Empty input
         if len(text.strip()) < 1:
@@ -109,18 +128,18 @@ class SecurityAgent(BaseAgent):
                     errors=["Blocked: potential prompt injection detected."],
                 )
 
-        # Path traversal
+        # Path traversal (check both raw and normalized)
         for regex in PATH_TRAVERSAL_PATTERNS:
-            if regex.search(text):
+            if regex.search(text_lower):
                 log.warning("Path traversal pattern detected")
                 return AgentResult(
                     success=False,
                     errors=["Blocked: potential path traversal detected."],
                 )
 
-        # Command injection (only flag if task involves tool/shell execution)
+        # Command injection (check normalized text)
         for regex in COMMAND_INJECTION_PATTERNS:
-            if regex.search(text):
+            if regex.search(text_lower):
                 log.warning("Command injection pattern detected")
                 return AgentResult(
                     success=False,

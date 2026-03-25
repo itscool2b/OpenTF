@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import defaultdict
+from collections import defaultdict, deque
 from typing import Awaitable, Callable
 
 from opentf.models.message import Message, MessageType
@@ -22,10 +22,10 @@ Handler = Callable[[Message], Awaitable[None]]
 class MessageBus:
     """Async pub/sub message bus."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_audit_log: int = 10_000) -> None:
         self._subscribers: dict[MessageType, list[Handler]] = defaultdict(list)
         self._global_subscribers: list[Handler] = []
-        self._audit_log: list[Message] = []
+        self._audit_log: deque[Message] = deque(maxlen=max_audit_log)
 
     def subscribe(self, msg_type: MessageType, handler: Handler) -> None:
         """Subscribe a handler to a specific message type."""

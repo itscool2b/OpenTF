@@ -19,6 +19,7 @@ from opentf.tools.file_tools import (
     all_handlers as file_handlers,
 )
 from opentf.tools.data_tools import DATA_TOOLS, data_handlers
+from opentf.tools.git_tools import GIT_TOOLS, git_handlers
 
 log = logging.getLogger(__name__)
 
@@ -206,6 +207,9 @@ class MainAgent(BaseAgent):
 
         tools.extend(DATA_TOOLS)
         handlers.update(data_handlers())
+
+        tools.extend(GIT_TOOLS)
+        handlers.update(git_handlers())
 
         return tools, handlers
 

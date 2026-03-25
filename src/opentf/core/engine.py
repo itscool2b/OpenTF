@@ -35,8 +35,9 @@ class Engine:
         model: str | None = None,
         temperature: float | None = None,
         on_message: MessageHandler | None = None,
+        provider_name: str = "anthropic",
     ) -> None:
-        self.llm = LLMClient(api_key=api_key)
+        self.llm = LLMClient(provider_name=provider_name, api_key=api_key)
         if model:
             self.llm.model = model
         if temperature is not None:
@@ -112,3 +113,21 @@ class Engine:
                 })
 
         return outputs
+
+    async def close(self) -> None:
+        """Release all resources."""
+        try:
+            context_agent = self.registry.get("context")
+            if context_agent and hasattr(context_agent, "_retriever") and context_agent._retriever:
+                await context_agent._retriever.close()
+        except Exception:
+            pass
+        self.bus.clear()
+        self.conversation_history.clear()
+        log.info("Engine shut down.")
+
+    async def __aenter__(self) -> "Engine":
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        await self.close()

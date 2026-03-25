@@ -56,8 +56,16 @@ def scan_workspace(root: Path | None = None) -> WorkspaceInfo:
     # Build directory tree
     info.tree = _build_tree(root)
 
-    # Count files
-    info.file_count = sum(1 for _ in root.rglob("*") if _.is_file() and not _should_skip(_.parent))
+    # Count files (capped to avoid slowdowns on huge repos)
+    count = 0
+    for p in root.rglob("*"):
+        if p.is_symlink():
+            continue
+        if p.is_file() and not _should_skip(p.parent):
+            count += 1
+            if count >= 10_000:
+                break
+    info.file_count = count
 
     # Read summary from README
     info.summary = _read_summary(root, info)
@@ -175,6 +183,8 @@ def _build_tree(root: Path, max_lines: int = MAX_TREE_LINES) -> str:
     def walk(path: Path, prefix: str, depth: int) -> None:
         if len(lines) >= max_lines or depth > MAX_TREE_DEPTH:
             return
+        if path.is_symlink():
+            return
 
         try:
             entries = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name))
@@ -215,7 +225,8 @@ def _read_summary(root: Path, info: WorkspaceInfo) -> str:
         readme = root / readme_name
         if readme.exists():
             try:
-                text = readme.read_text()[:500].strip()
+                with readme.open("r", errors="replace") as f:
+                    text = f.read(512).strip()
                 if text:
                     # Take first paragraph
                     first_para = text.split("\n\n")[0].replace("\n", " ").strip()

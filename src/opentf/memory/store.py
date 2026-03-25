@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,15 +39,22 @@ class MemoryStore:
 
     persist_dir: str = ".opentf/memory"
     embedding_model: str = EMBEDDING_MODEL
+    max_documents: int = 10_000
     _embedder: SentenceTransformer | None = field(default=None, repr=False)
     _client: chromadb.ClientAPI | None = field(default=None, repr=False)
     _collection: chromadb.Collection | None = field(default=None, repr=False)
+    _id_queue: list[str] = field(default_factory=list, repr=False)
 
     @property
     def embedder(self) -> SentenceTransformer:
         if self._embedder is None:
             log.info("Loading embedding model: %s", self.embedding_model)
-            self._embedder = SentenceTransformer(self.embedding_model)
+            try:
+                self._embedder = SentenceTransformer(self.embedding_model)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to load embedding model '{self.embedding_model}': {exc}"
+                ) from exc
         return self._embedder
 
     @property
@@ -83,6 +91,16 @@ class MemoryStore:
             metadatas=[meta],
         )
         log.debug("Stored memory %s: %s...", entry_id[:8], content[:60])
+
+        # Evict oldest entries if over limit
+        self._id_queue.append(entry_id)
+        while len(self._id_queue) > self.max_documents:
+            oldest = self._id_queue.pop(0)
+            try:
+                await asyncio.to_thread(collection.delete, ids=[oldest])
+            except Exception:
+                pass
+
         return entry_id
 
     async def search(self, query: str, top_k: int = 5) -> list[MemoryEntry]:
@@ -114,3 +132,10 @@ class MemoryStore:
     async def delete(self, entry_id: str) -> None:
         """Delete a memory entry by ID."""
         await asyncio.to_thread(self.collection.delete, ids=[entry_id])
+
+    async def close(self) -> None:
+        """Release resources (embedder model, ChromaDB connection)."""
+        self._embedder = None
+        self._collection = None
+        self._client = None
+        log.info("MemoryStore closed")

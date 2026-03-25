@@ -1,4 +1,4 @@
-"""Onboarding screen for API key setup with polished styling."""
+"""Onboarding screen for API key setup with multi-provider support."""
 
 from __future__ import annotations
 
@@ -23,13 +23,14 @@ BRAND_ART = f"""\
 class OnboardingComplete(Message):
     """Posted when the user has entered a valid API key."""
 
-    def __init__(self, api_key: str) -> None:
+    def __init__(self, api_key: str, provider: str = "anthropic") -> None:
         super().__init__()
         self.api_key = api_key
+        self.provider = provider
 
 
 class OnboardingScreen(Vertical):
-    """First-run screen prompting for an Anthropic API key."""
+    """First-run screen prompting for an API key."""
 
     DEFAULT_CSS = f"""
     OnboardingScreen {{
@@ -75,13 +76,28 @@ class OnboardingScreen(Vertical):
     }}
     """
 
+    def __init__(self, provider: str = "anthropic", **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._provider = provider
+
     def compose(self) -> ComposeResult:
+        if self._provider == "anthropic":
+            info_text = "Enter your Anthropic API key to get started."
+            link_text = "console.anthropic.com/settings/keys"
+        elif self._provider == "openai":
+            info_text = "Enter your OpenAI API key to get started."
+            link_text = "platform.openai.com/api-keys"
+        else:
+            info_text = f"Enter your {self._provider} API key to get started."
+            link_text = ""
+
         with Center():
             with Middle():
                 with Vertical(id="onboard-box"):
                     yield Static(BRAND_ART, classes="brand")
-                    yield Static("Enter your Anthropic API key to get started.", classes="info")
-                    yield Static("console.anthropic.com/settings/keys", classes="link")
+                    yield Static(info_text, classes="info")
+                    if link_text:
+                        yield Static(link_text, classes="link")
                     yield Input(placeholder="Paste your API key here", password=True, id="key-input")
                     yield Static("", id="feedback")
                     yield Static("Stored at ~/.config/opentf/credentials.json", classes="dim")
@@ -97,24 +113,38 @@ class OnboardingScreen(Vertical):
 
         from opentf.auth.credentials import CredentialManager
 
-        if not CredentialManager.validate_key_format(key):
-            feedback.update(f"[{COLORS['error']}]That doesn't look like a valid Anthropic key.[/]")
+        if not CredentialManager.validate_key_format(key, self._provider):
+            feedback.update(f"[{COLORS['error']}]That doesn't look like a valid {self._provider} key.[/]")
             return
 
         feedback.update(f"[{COLORS['warning']}]Validating...[/]")
 
         try:
-            import anthropic
+            if self._provider == "anthropic":
+                import anthropic
+                client = anthropic.AsyncAnthropic(api_key=key)
+                await client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=10,
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+            elif self._provider == "openai":
+                import openai
+                client = openai.AsyncOpenAI(api_key=key)
+                await client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    max_tokens=10,
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+            else:
+                # For other providers, just accept the key
+                pass
 
-            client = anthropic.AsyncAnthropic(api_key=key)
-            await client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=10,
-                messages=[{"role": "user", "content": "hi"}],
-            )
             feedback.update("")
-            self.post_message(OnboardingComplete(api_key=key))
-        except anthropic.AuthenticationError:
-            feedback.update(f"[{COLORS['error']}]Invalid API key. Check and try again.[/]")
+            self.post_message(OnboardingComplete(api_key=key, provider=self._provider))
         except Exception as exc:
-            feedback.update(f"[{COLORS['error']}]Connection error: {type(exc).__name__}[/]")
+            exc_name = type(exc).__name__
+            if "authentication" in exc_name.lower() or "auth" in str(exc).lower():
+                feedback.update(f"[{COLORS['error']}]Invalid API key. Check and try again.[/]")
+            else:
+                feedback.update(f"[{COLORS['error']}]Connection error: {exc_name}[/]")
