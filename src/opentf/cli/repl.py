@@ -19,6 +19,8 @@ import signal
 from pathlib import Path
 from typing import Any
 
+import readline
+
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.theme import Theme
@@ -139,6 +141,21 @@ async def run_repl() -> None:
         nonlocal cancelled
         cancelled = True
 
+    # Tab completion for / commands
+    _COMMANDS = [
+        "/model", "/provider", "/theme", "/skill", "/cost", "/status",
+        "/copy", "/export", "/compact", "/clear", "/help", "/exit",
+        "/skill list", "/skill install", "/skill export", "/skill remove",
+    ]
+
+    def _completer(text: str, state: int) -> str | None:
+        matches = [c for c in _COMMANDS if c.startswith(text)]
+        return matches[state] if state < len(matches) else None
+
+    readline.set_completer(_completer)
+    readline.set_completer_delims("")
+    readline.parse_and_bind("tab: complete")
+
     _print_banner(provider, model)
 
     try:
@@ -160,6 +177,10 @@ async def run_repl() -> None:
                 parts = user_input.split(maxsplit=1)
                 cmd = parts[0].lower()
                 arg = parts[1].strip() if len(parts) > 1 else ""
+
+                if cmd == "/":
+                    _print_help()
+                    continue
 
                 if cmd == "/exit" or cmd == "/quit":
                     console.print(f"[{COLORS['text_muted']}]Goodbye.[/]")
