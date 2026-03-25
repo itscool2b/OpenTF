@@ -1,0 +1,25 @@
+llm:
+  provider: anthropic
+  model: claude-sonnet-4-20250514
+  max_tokens: 8192
+  temperature: 0.7
+
+orchestrator:
+  max_retries: 1
+  validation_retries: 1
+
+memory:
+  persist_dir: .opentf/memory
+  embedding_model: all-MiniLM-L6-v2
+  top_k: 5
+
+agents:
+  validator:
+    enabled: true
+    pre_execution: true
+    post_execution: true
+
+  code:
+    enabled: true
+    model: claude-sonnet-4-20250514
+    temperature: 0.3

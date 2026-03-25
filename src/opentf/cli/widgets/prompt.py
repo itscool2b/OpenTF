@@ -1,0 +1,81 @@
+"""Input prompt with history and mode-aware styling."""
+
+from __future__ import annotations
+
+from textual import events
+from textual.message import Message
+from textual.widgets import Input
+
+from opentf.cli.theme import COLORS
+
+
+class SlashToggle(Message):
+    """Posted when slash state changes (show/hide palette)."""
+
+    def __init__(self, active: bool) -> None:
+        super().__init__()
+        self.active = active
+
+
+class PromptInput(Input):
+    """Single-line input with command history and mode badges."""
+
+    DEFAULT_CSS = f"""
+    PromptInput {{
+        height: 3;
+        background: {COLORS['bg']};
+        border-top: solid {COLORS['border']};
+        border-bottom: none;
+        border-left: none;
+        border-right: none;
+        padding: 0 1;
+        color: {COLORS['text']};
+    }}
+    PromptInput:focus {{
+        border-top: solid {COLORS['border_focus']};
+    }}
+    """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(placeholder=" > type a message or /", **kwargs)
+        self._history: list[str] = []
+        self._history_index = -1
+
+    def add_to_history(self, text: str) -> None:
+        if text and (not self._history or self._history[-1] != text):
+            self._history.append(text)
+        self._history_index = -1
+
+    def _on_key(self, event: events.Key) -> None:
+        if event.key == "up" and self._history:
+            if self._history_index == -1:
+                self._history_index = len(self._history) - 1
+            elif self._history_index > 0:
+                self._history_index -= 1
+            self.value = self._history[self._history_index]
+            event.prevent_default()
+        elif event.key == "down":
+            if self._history_index >= 0:
+                self._history_index += 1
+                if self._history_index >= len(self._history):
+                    self._history_index = -1
+                    self.value = ""
+                else:
+                    self.value = self._history[self._history_index]
+            event.prevent_default()
+
+    def set_mode(self, mode: str) -> None:
+        """Switch prompt placeholder for different modes."""
+        if mode == "plan":
+            self.placeholder = " plan > describe your goal or refine"
+        elif mode == "janitor":
+            self.placeholder = " janitor > accept/reject N, /done, /cancel"
+        else:
+            self.placeholder = " > type a message or /"
+
+    def watch_value(self, value: str) -> None:
+        """Show/hide palette reactively based on whether input starts with /."""
+        if value.startswith("/"):
+            self.post_message(SlashToggle(active=True))
+        else:
+            self.post_message(SlashToggle(active=False))
