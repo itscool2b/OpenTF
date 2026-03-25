@@ -27,6 +27,8 @@ COMMANDS = [
     ("/cost", "Token usage and estimated cost"),
     ("/login", "Set or change API key"),
     ("/logout", "Clear stored credentials"),
+    ("/provider", "Switch LLM provider (anthropic/openai/ollama)"),
+    ("/skill", "Manage skills (list/install/export/remove)"),
     ("/clear", "Clear the output"),
     ("/exit", "Quit OpenTF"),
 ]

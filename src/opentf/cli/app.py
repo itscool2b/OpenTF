@@ -149,11 +149,14 @@ class OpenTFApp(App):
 
     def compose(self) -> ComposeResult:
         yield HeaderBar(id="header")
-        if self.credentials.resolve_api_key():
+        provider = self.llm.provider_name
+        needs_key = provider != "ollama"
+        has_key = self.credentials.resolve_api_key(provider) if needs_key else True
+        if has_key:
             yield from self._compose_main()
         else:
             self._needs_onboarding = True
-            yield OnboardingScreen(id="onboarding")
+            yield OnboardingScreen(provider=provider, id="onboarding")
 
     def _compose_main(self) -> ComposeResult:
         yield OutputDisplay(id="output")
@@ -219,8 +222,9 @@ class OpenTFApp(App):
 
     @on(OnboardingComplete)
     async def on_onboarding_complete(self, event: OnboardingComplete) -> None:
-        self.credentials.store_api_key(event.api_key)
+        self.credentials.store_api_key(event.api_key, provider=event.provider)
         self.llm.api_key = event.api_key
+        self.llm.provider_name = event.provider
         self.llm.reset_client()
 
         onboarding = self.query_one("#onboarding")
@@ -808,7 +812,7 @@ class OpenTFApp(App):
                 except Exception:
                     pass
             self._needs_onboarding = True
-            await self.mount(OnboardingScreen(id="onboarding"))
+            await self.mount(OnboardingScreen(provider=self.llm.provider_name, id="onboarding"))
 
         elif command == "/logout":
             self.credentials.clear_credentials()
