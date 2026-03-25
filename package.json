@@ -1,0 +1,48 @@
+{
+  "name": "opentf",
+  "version": "0.1.0",
+  "description": "Open Task Force - Autonomous multi-agent orchestration platform",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "start": "npm run build && node dist/index.js",
+    "hello": "npm run build && node dist/hello.js",
+    "dev": "tsc --watch & node --watch dist/index.js",
+    "dev:hello": "tsc --watch & node --watch dist/hello.js",
+    "clean": "rm -rf dist",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "tic-tac-toe": "node tic-tac-toe.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit --pretty"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/itscool2b/OpenForce.git"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "automation",
+    "orchestration",
+    "multi-agent",
+    "autonomous",
+    "typescript",
+    "hello-world"
+  ],
+  "author": "Arjun Bajpai",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/itscool2b/OpenForce/issues"
+  },
+  "homepage": "https://github.com/itscool2b/OpenForce#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3",
+    "@types/node": "^20.10.0"
+  },
+  "dependencies": {}
+}
