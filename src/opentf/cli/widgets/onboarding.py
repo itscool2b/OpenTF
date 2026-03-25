@@ -10,8 +10,8 @@ from textual.widgets import Input, Static
 
 from opentf.cli.theme import COLORS
 
-BRAND_ART = """\
-[bold #e2e8f0]
+BRAND_ART = f"""\
+[bold {COLORS['text']}]
   ___                 _____ _____
  / _ \\ _ __  ___ _ _ |_   _|  ___|
 | | | | '_ \\/ -_) ' \\  | | | |_
@@ -54,7 +54,7 @@ class OnboardingScreen(Vertical):
     }}
     OnboardingScreen .link {{
         text-align: center;
-        color: {COLORS['accent2']};
+        color: {COLORS['accent']};
     }}
     OnboardingScreen .dim {{
         text-align: center;
@@ -82,7 +82,7 @@ class OnboardingScreen(Vertical):
                     yield Static(BRAND_ART, classes="brand")
                     yield Static("Enter your Anthropic API key to get started.", classes="info")
                     yield Static("console.anthropic.com/settings/keys", classes="link")
-                    yield Input(placeholder="sk-ant-...", password=True, id="key-input")
+                    yield Input(placeholder="Paste your API key here", password=True, id="key-input")
                     yield Static("", id="feedback")
                     yield Static("Stored at ~/.config/opentf/credentials.json", classes="dim")
 

@@ -11,9 +11,16 @@ from textual.widgets.option_list import Option
 from opentf.cli.theme import COLORS
 
 COMMANDS = [
+    ("/taskforce", "Spawn parallel agent swarm for big projects"),
     ("/plan", "Enter interactive planning mode"),
     ("/janitor", "Scan for code quality issues"),
     ("/model", "Switch model"),
+    ("/resume", "Resume previous session"),
+    ("/new", "Start a new session"),
+    ("/save", "Save session with a name"),
+    ("/sessions", "List saved sessions"),
+    ("/undo", "Undo last file change"),
+    ("/review", "Toggle manual review for file changes"),
     ("/compact", "Summarize conversation history"),
     ("/help", "Show available commands"),
     ("/status", "Auth, model, token usage"),
@@ -46,7 +53,7 @@ class CommandPalette(Vertical):
         layer: overlay;
         dock: bottom;
         margin-bottom: 2;
-        padding: 0 0;
+        padding: 1 0;
     }}
     CommandPalette OptionList {{
         height: auto;
@@ -60,6 +67,7 @@ class CommandPalette(Vertical):
     CommandPalette OptionList > .option-list--option-highlighted {{
         background: {COLORS['surface']};
         color: {COLORS['text']};
+        border-left: thick {COLORS['accent']};
     }}
     """
 
@@ -79,7 +87,7 @@ class CommandPalette(Vertical):
         for cmd, desc in self._all_commands:
             if query and query not in cmd:
                 continue
-            label = f"[bold {COLORS['text']}]{cmd:<12}[/] [{COLORS['text_dim']}]{desc}[/]"
+            label = f"[bold {COLORS['text']}]{cmd:<14}[/] [{COLORS['text_dim']}]{desc}[/]"
             options.append(Option(label, id=cmd))
         return options
 

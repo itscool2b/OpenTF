@@ -35,7 +35,7 @@ class ThinkingIndicator(Static):
 
     def _update_display(self) -> None:
         dots = "." * self._dots + " " * (3 - self._dots)
-        self.update(f"[{COLORS['text_muted']}]  thinking{dots}[/]")
+        self.update(f"[{COLORS['text_dim']}]  thinking{dots}[/]")
 
 
 class MessageBlock(Static):
@@ -50,6 +50,7 @@ class MessageBlock(Static):
     MessageBlock.user-msg {{
         border-left: thick {COLORS['user_msg']};
         margin-top: 1;
+        margin-bottom: 1;
         padding: 0 1 0 1;
     }}
     MessageBlock.assistant-msg {{
@@ -104,7 +105,7 @@ class OutputDisplay(VerticalScroll):
     DEFAULT_CSS = f"""
     OutputDisplay {{
         background: {COLORS['bg']};
-        padding: 0 1;
+        padding: 1 1;
         scrollbar-size: 1 1;
     }}
     """
@@ -117,7 +118,7 @@ class OutputDisplay(VerticalScroll):
     async def add_user_message(self, text: str) -> None:
         """Add a user message with purple left border."""
         await self.hide_thinking()
-        block = MessageBlock(f"[bold]{text}[/]", role="user")
+        block = MessageBlock(f"[{COLORS['text_dim']}]you >[/] [bold]{text}[/]", role="user")
         await self.mount(block)
         self.scroll_end(animate=False)
 

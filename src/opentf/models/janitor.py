@@ -8,6 +8,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from opentf.cli.theme import COLORS
+
 
 class JanitorSeverity(str, Enum):
     HIGH = "high"
@@ -31,17 +33,19 @@ class JanitorIssue(BaseModel):
     status: str = "pending"          # "pending", "accepted", "rejected"
 
     def summary_line(self) -> str:
+        D = COLORS['text_dim']
         sev = self.severity.value.upper()
         loc = f"Line {self.line_start}" if self.line_start == self.line_end else f"Lines {self.line_start}-{self.line_end}"
-        return f"[{self.id}] {sev:<4} | {self.group}/{self.category} | {loc}\n    {self.description}"
+        return f"[bold]{self.id}[/] {sev:<4} [{D}]{self.group}/{self.category}[/] {loc}\n    {self.description}"
 
     def detail_block(self) -> str:
+        D = COLORS['text_dim']
         lines = [self.summary_line()]
         if self.snippet:
-            lines.append(f"\n    Code:\n    ```\n    {self.snippet}\n    ```")
+            lines.append(f"\n    [{D}]Code:[/]\n    {self.snippet}")
         if self.suggested_fix:
-            lines.append(f"\n    Fix: {self.suggested_fix}")
-        lines.append(f"\n    Status: {self.status}")
+            lines.append(f"\n    [{D}]Fix:[/] {self.suggested_fix}")
+        lines.append(f"\n    [{D}]Status:[/] {self.status}")
         return "\n".join(lines)
 
 
@@ -77,22 +81,37 @@ class JanitorReport(BaseModel):
         return f"Scanned {len(self.files_scanned)} files | {len(self.issues)} issues ({high} high, {med} medium, {low} low)"
 
     def format_markdown(self) -> str:
-        lines = [f"## Janitor Report\n{self.summary_line()}\n"]
+        A = COLORS['accent']
+        B = COLORS['border']
+        D = COLORS['text_dim']
+        lines = [
+            f"[bold {A}]{'─' * 40}[/]",
+            f"  [bold]Janitor Report[/]",
+            f"  [{D}]{self.summary_line_plain()}[/]",
+            f"[{B}]{'─' * 40}[/]",
+        ]
 
         for file_path, file_issues in self.issues_by_file().items():
-            lines.append(f"\n### {file_path}\n")
+            lines.append(f"\n  [bold]{file_path}[/]")
             for issue in file_issues:
                 sev = issue.severity.value.upper()
-                loc = f"Line {issue.line_start}" if issue.line_start == issue.line_end else f"Lines {issue.line_start}-{issue.line_end}"
+                loc = f"L{issue.line_start}" if issue.line_start == issue.line_end else f"L{issue.line_start}-{issue.line_end}"
                 status_icon = {"pending": "( )", "accepted": "(x)", "rejected": "(-)"}
                 icon = status_icon.get(issue.status, "( )")
                 lines.append(
-                    f"  {icon} **[{issue.id}]** {sev} | {issue.group}/{issue.category} | {loc}\n"
-                    f"      {issue.description}\n"
-                    f"      Fix: {issue.suggested_fix}\n"
+                    f"    {icon} [bold]{issue.id}[/] {sev} [{D}]{issue.group}/{issue.category}[/] {loc}\n"
+                    f"         {issue.description}\n"
+                    f"         [{D}]Fix: {issue.suggested_fix}[/]"
                 )
 
         return "\n".join(lines)
+
+    def summary_line_plain(self) -> str:
+        """Plain text summary (no markup) for use inside markup blocks."""
+        high = sum(1 for i in self.issues if i.severity == JanitorSeverity.HIGH)
+        med = sum(1 for i in self.issues if i.severity == JanitorSeverity.MEDIUM)
+        low = sum(1 for i in self.issues if i.severity == JanitorSeverity.LOW)
+        return f"{len(self.files_scanned)} files, {len(self.issues)} issues ({high} high, {med} medium, {low} low)"
 
     def to_dict(self) -> dict[str, Any]:
         return {

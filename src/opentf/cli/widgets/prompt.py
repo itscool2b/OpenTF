@@ -24,7 +24,7 @@ class PromptInput(Input):
     PromptInput {{
         height: 3;
         background: {COLORS['bg']};
-        border-top: solid {COLORS['border']};
+        border-top: tall {COLORS['border']};
         border-bottom: none;
         border-left: none;
         border-right: none;
@@ -32,12 +32,12 @@ class PromptInput(Input):
         color: {COLORS['text']};
     }}
     PromptInput:focus {{
-        border-top: solid {COLORS['border_focus']};
+        border-top: tall {COLORS['border_focus']};
     }}
     """
 
     def __init__(self, **kwargs) -> None:
-        super().__init__(placeholder=" > type a message or /", **kwargs)
+        super().__init__(placeholder="Type a message, or / for commands", **kwargs)
         self._history: list[str] = []
         self._history_index = -1
 
@@ -67,11 +67,11 @@ class PromptInput(Input):
     def set_mode(self, mode: str) -> None:
         """Switch prompt placeholder for different modes."""
         if mode == "plan":
-            self.placeholder = " plan > describe your goal or refine"
+            self.placeholder = "Describe your goal, or /confirm /cancel"
         elif mode == "janitor":
-            self.placeholder = " janitor > accept/reject N, /done, /cancel"
+            self.placeholder = "accept N, reject N, /done, or /cancel"
         else:
-            self.placeholder = " > type a message or /"
+            self.placeholder = "Type a message, or / for commands"
 
     def watch_value(self, value: str) -> None:
         """Show/hide palette reactively based on whether input starts with /."""

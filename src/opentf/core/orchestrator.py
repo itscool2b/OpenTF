@@ -80,7 +80,9 @@ class Orchestrator:
             try:
                 from opentf.core.compaction import compact_history
                 await self._publish_status("orchestrator", "compacting...")
-                history = await compact_history(self.llm, history)
+                compacted = await compact_history(self.llm, history)
+                history.clear()
+                history.extend(compacted)
                 await self._publish_status("orchestrator", "compacted", done=True)
             except ImportError:
                 log.warning("Compaction module not available")

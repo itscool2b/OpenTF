@@ -83,6 +83,7 @@ class ToolLoop:
         bus: Any | None = None,
         source: str = "agent",
         on_stream: Callable[[str], Awaitable[None]] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -91,6 +92,7 @@ class ToolLoop:
         self.bus = bus
         self.source = source
         self.on_stream = on_stream
+        self.is_cancelled = is_cancelled
 
     async def run(
         self,
@@ -106,6 +108,9 @@ class ToolLoop:
         msgs = list(messages)
 
         for iteration in range(self.max_iterations):
+            if self.is_cancelled and self.is_cancelled():
+                return "(Cancelled by user)", total_tokens
+
             response = await self.llm.complete(
                 messages=msgs,
                 system=system,
@@ -130,6 +135,13 @@ class ToolLoop:
                 if self.on_stream and final_text:
                     await self.on_stream(final_text)
                 return final_text, total_tokens
+
+            # Stream intermediate text (LLM reasoning before tool calls)
+            if self.on_stream:
+                text_parts = [b.text for b in response.content if b.type == "text"]
+                intermediate = "\n".join(text_parts)
+                if intermediate.strip():
+                    await self.on_stream(intermediate)
 
             # Append assistant response to messages
             msgs.append({
@@ -191,22 +203,11 @@ class ToolLoop:
                 except ApprovalRequired as req:
                     approved = await self._request_approval(req.command, tool_id)
                     if approved:
-                        # Re-run after approval -- bypass the check this time
+                        # Re-call handler with approval flag
                         try:
-                            from opentf.tools.file_tools import validate_command
-                            command = tool_input["command"]
-                            # Execute directly without dangerous check
-                            proc = await asyncio.create_subprocess_shell(
-                                command,
-                                stdout=asyncio.subprocess.PIPE,
-                                stderr=asyncio.subprocess.PIPE,
-                                cwd=str(tool_input.get("cwd", ".")),
-                            )
-                            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-                            output = stdout.decode(errors="replace")
-                            if stderr:
-                                output += "\n" + stderr.decode(errors="replace")
-                            result_str = _truncate_result(output)
+                            approved_input = {**tool_input, "_approved": True}
+                            result = await handler(approved_input)
+                            result_str = _truncate_result(str(result))
                             tool_results.append({
                                 "type": "tool_result",
                                 "tool_use_id": tool_id,
@@ -223,7 +224,7 @@ class ToolLoop:
                         tool_results.append({
                             "type": "tool_result",
                             "tool_use_id": tool_id,
-                            "content": f"Error: user denied command: {req.command}",
+                            "content": f"Error: user declined: {req.command}",
                             "is_error": True,
                         })
                 except Exception as exc:
@@ -249,12 +250,14 @@ class ToolLoop:
         return "(Tool loop reached maximum iterations)", total_tokens
 
     async def _request_approval(self, command: str, tool_id: str) -> bool:
-        """Request user approval for a dangerous command via bus."""
+        """Request user approval for a command via bus.
+
+        User can respond: yes (once), no (skip), always (session-wide allow).
+        """
         if not self.bus:
             log.warning("No bus for approval request, denying: %s", command)
             return False
 
-        # Create an event to wait for the approval response
         approval_event = asyncio.Event()
         approved = False
 
@@ -268,22 +271,30 @@ class ToolLoop:
             if msg.payload.get("tool_id") == tool_id:
                 approval_event.set()
 
+        async def on_always(msg: Message) -> None:
+            nonlocal approved
+            if msg.payload.get("tool_id") == tool_id:
+                approved = True
+                from opentf.tools.file_tools import add_to_session_allowlist
+                add_to_session_allowlist(command)
+                approval_event.set()
+
         self.bus.subscribe(MessageType.APPROVAL_GRANTED, on_granted)
         self.bus.subscribe(MessageType.APPROVAL_DENIED, on_denied)
+        self.bus.subscribe(MessageType.APPROVAL_ALWAYS, on_always)
 
-        # Publish approval request
         await self.bus.publish(Message(
             type=MessageType.APPROVAL_REQUESTED,
             source=self.source,
             payload={"command": command, "tool_id": tool_id},
         ))
 
-        # Wait indefinitely for user response
         try:
             await approval_event.wait()
         finally:
             self.bus.unsubscribe(MessageType.APPROVAL_GRANTED, on_granted)
             self.bus.unsubscribe(MessageType.APPROVAL_DENIED, on_denied)
+            self.bus.unsubscribe(MessageType.APPROVAL_ALWAYS, on_always)
 
         return approved
 

@@ -8,7 +8,7 @@ from textual.message import Message
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
-from opentf.cli.theme import COLORS
+from opentf.cli.theme import COLORS, MODEL_COLORS
 
 MODELS = [
     ("opus", "claude-opus-4-20250514", "Most capable, complex tasks"),
@@ -38,7 +38,7 @@ class ModelSelector(Vertical):
         layer: overlay;
     }}
     ModelSelector #model-box {{
-        width: 46;
+        width: 52;
         height: auto;
         max-height: 12;
         background: {COLORS['bg']};
@@ -62,6 +62,7 @@ class ModelSelector(Vertical):
     ModelSelector OptionList > .option-list--option-highlighted {{
         background: {COLORS['surface']};
         color: {COLORS['text']};
+        border-left: thick {COLORS['accent']};
     }}
     ModelSelector #model-hint {{
         text-align: center;
@@ -81,8 +82,9 @@ class ModelSelector(Vertical):
             yield Static("Switch Model", id="model-title")
             options = []
             for short, model_id, desc in MODELS:
-                current = "  *" if model_id == self._current_model else ""
-                label = f"  {short:<8} [{COLORS['text_dim']}]{desc}[/]{current}"
+                color = MODEL_COLORS.get(short, COLORS['text'])
+                current = f" [{COLORS['success']}][active][/]" if model_id == self._current_model else ""
+                label = f"  [{color}]{short:<8}[/] [{COLORS['text_dim']}]{desc}[/]{current}"
                 options.append(Option(label, id=model_id))
             yield OptionList(*options, id="model-options")
             yield Static("[up/down] navigate  [enter] select  [esc] close", id="model-hint")
@@ -96,8 +98,9 @@ class ModelSelector(Vertical):
             opt_list = self.query_one("#model-options", OptionList)
             opt_list.clear_options()
             for short, model_id, desc in MODELS:
-                current = "  *" if model_id == current_model else ""
-                label = f"  {short:<8} [{COLORS['text_dim']}]{desc}[/]{current}"
+                color = MODEL_COLORS.get(short, COLORS['text'])
+                current = f" [{COLORS['success']}][active][/]" if model_id == current_model else ""
+                label = f"  [{color}]{short:<8}[/] [{COLORS['text_dim']}]{desc}[/]{current}"
                 opt_list.add_option(Option(label, id=model_id))
             opt_list.focus()
         except Exception:

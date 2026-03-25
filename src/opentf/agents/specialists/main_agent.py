@@ -37,46 +37,70 @@ except ImportError:
 # --- Unified system prompt ---
 
 CONVERSATION_PROMPT = """\
-You are OpenTF, a helpful AI assistant. Respond naturally and concisely.
-If the user asks a question, answer it. If they need help, help them."""
+You are OpenTF, an autonomous AI coding agent running in the user's terminal.
+
+You have capabilities the user should know about:
+- You can read, write, edit, and search files in the current project
+- You can run shell commands (with user approval for non-safe commands)
+- You can search the web and fetch URLs
+- You have persistent memory across sessions -- you remember past tasks and solutions
+- The user can save/resume conversation sessions (/save, /resume)
+- You support planning mode (/plan) for structured multi-step tasks
+- You support code scanning (/janitor) for quality issues
+- File changes are backed up and undoable (/undo)
+
+When the user asks about your capabilities, memory, or how you work, answer accurately \
+based on the above. You DO have persistent memory via a vector database.
+
+Respond naturally and concisely."""
 
 AGENT_PROMPT = """\
 You are OpenTF, an autonomous coding agent working in a real project directory.
 
-IMPORTANT: You MUST use the provided tools to accomplish tasks. When the user \
-asks you to create, modify, or work with files, use write_file, edit_file, \
-read_file, and other tools. Never output code for the user to manually copy-paste.
+IMPORTANT: Use the provided tools to accomplish tasks. When the user asks you to \
+create, modify, or work with files, use the tools directly. Never output code for \
+the user to copy-paste.
 
-Available tools: read_file, write_file, edit_file, list_directory, search_files, run_command.
+Tools available:
+- read_file, write_file, edit_file: File operations (sandboxed to project directory)
+- list_directory, search_files: Project exploration
+- run_command: Shell commands (safe commands auto-approve, others need user approval)
+- web_search, read_url: Web research (if available)
 
-Workflow:
-1. For new files: use write_file to create them directly.
-2. For modifications: use read_file first, then edit_file to make changes.
-3. For exploration: use list_directory and search_files.
-4. For running code: use run_command.
+You also have:
+- Persistent memory: Past interactions are stored and retrieved automatically. \
+You can reference solutions from previous sessions.
+- Workspace awareness: You know the project language, framework, test command, \
+and file structure.
+- File safety: Every file change is backed up. The user can /undo changes.
 
 Guidelines:
 - Do not narrate routine tool calls. Just call the tool.
-- Prefer edit_file over write_file for modifications (preserves unchanged code).
-- Write minimal code. A hello world is one file.
-- Don't create config files unless asked.
+- Prefer edit_file over write_file for modifications.
 - Match existing code style.
 - Report briefly what you did after completing the task."""
 
-# Conversation-only signals -- everything else gets tools
-_CONVERSATION_SIGNALS = {
-    "hello", "hi ", "hey", "thanks", "thank you", "bye", "goodbye",
-    "how are you", "what's up", "yo", "sup",
-    "what is your", "who are you", "can you explain",
-    "tell me about", "what do you think",
+# Keywords that indicate tool access is needed
+_TOOL_SIGNALS = {
+    "create", "make", "write", "edit", "fix", "build", "run",
+    "delete", "remove", "add", "change", "update", "modify",
+    "read", "show", "list", "find", "search", "grep",
+    "file", "folder", "directory", "code", "script", "test",
+    "install", "commit", "push", "pull", "deploy", "refactor",
+    "debug", "error", "bug", "implement", "generate", "save",
+    "rename", "move", "copy", "open", "check", "scan", "analyze",
 }
 
 
 def _needs_tools(text: str) -> bool:
-    """Most requests need tools. Only skip for pure chat/greetings."""
-    text_lower = text.lower().strip()
-    if len(text_lower) < 20 and any(text_lower.startswith(s) for s in _CONVERSATION_SIGNALS):
+    """Check if input needs tool access. Action words always get tools."""
+    words = set(text.lower().split())
+    if words & _TOOL_SIGNALS:
+        return True
+    # Short messages without action words are pure conversation
+    if len(text) < 30:
         return False
+    # Long messages get tools by default
     return True
 
 
@@ -154,6 +178,16 @@ class MainAgent(BaseAgent):
             temperature=0.3,
         )
 
+        # Save interaction to memory (non-blocking, best-effort)
+        if text:
+            try:
+                from opentf.memory.store import MemoryStore
+                store = MemoryStore()
+                summary = f"Task: {user_input[:200]}\nResult: {text[:300]}"
+                await store.store(summary, metadata={"type": "interaction"})
+            except Exception:
+                pass
+
         return AgentResult(
             success=True,
             output={"response": text, "_streamed": bool(on_stream)},
@@ -176,7 +210,7 @@ class MainAgent(BaseAgent):
         return tools, handlers
 
     def _build_system_prompt(self, context: AgentContext) -> str:
-        """Build system prompt with workspace context."""
+        """Build system prompt with workspace context and memory."""
         base = AGENT_PROMPT
 
         workspace = context.constraints.get("workspace_summary", "")
@@ -184,6 +218,10 @@ class MainAgent(BaseAgent):
             base += f"\n\nProject:\n{workspace}"
         test_cmd = context.constraints.get("test_command", "")
         if test_cmd:
-            base += f"\nTest command: `{test_cmd}`"
+            base += f"\nTest command: {test_cmd}"
+
+        memory = context.constraints.get("memory_context", "")
+        if memory:
+            base += f"\n\nRelevant memories from past sessions:\n{memory}"
 
         return base

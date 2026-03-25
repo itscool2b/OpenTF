@@ -16,7 +16,7 @@ from opentf.agents.specialists.main_agent import MainAgent
 from opentf.agents.specialists.planner import PlannerAgent
 from opentf.agents.specialists.skill_builder import SkillBuilderAgent
 from opentf.auth.credentials import CredentialManager
-from opentf.cli.theme import COLORS, SONNET_INPUT_PRICE, SONNET_OUTPUT_PRICE
+from opentf.cli.theme import COLORS, MODEL_PRICING, SONNET_INPUT_PRICE, SONNET_OUTPUT_PRICE
 from opentf.cli.widgets.activity import ActivityBar
 from opentf.cli.widgets.command_palette import CommandPalette, CommandSelected
 from opentf.cli.widgets.log_panel import LogPanel
@@ -28,20 +28,38 @@ from opentf.cli.widgets.status import HeaderBar
 from opentf.core.bus import MessageBus
 from opentf.core.orchestrator import Orchestrator
 from opentf.core.plan_store import PlanStore
+from opentf.core.session import SessionManager
 from opentf.llm.client import LLMClient
 from opentf.models.janitor import JanitorReport
 from opentf.models.message import Message, MessageType
 from opentf.models.plan import Plan, StepStatus
 
-HELP_TEXT = """\
-**Commands:**  `/plan`  `/janitor`  `/model`  `/compact`  `/help`  `/status`  `/cost`  `/login`  `/logout`  `/clear`  `/exit`
+_A = COLORS['accent']
+_D = COLORS['text_dim']
+_B = COLORS['border']
+_E = COLORS['error']
+_S = COLORS['success']
 
-**Planning mode:**  `/confirm`  `/cancel`  `/show`
-
-**Janitor mode:**  `/done`  `/cancel`  `accept N`  `reject N`  `list`
-
-**Shortcuts:** Ctrl+C quit, Ctrl+L clear
-"""
+HELP_TEXT = (
+    f"[bold {_A}]{'─' * 40}[/]\n"
+    f"  [bold]Commands[/]\n"
+    f"[{_B}]{'─' * 40}[/]\n"
+    f"  [{_A}]/plan[/]       Planning mode\n"
+    f"  [{_A}]/janitor[/]    Code quality scan\n"
+    f"  [{_A}]/model[/]      Switch model\n"
+    f"  [{_A}]/undo[/]       Undo last file change\n"
+    f"  [{_A}]/review[/]     Toggle file review\n"
+    f"  [{_A}]/compact[/]    Compress history\n"
+    f"  [{_A}]/resume[/]     Resume session\n"
+    f"  [{_A}]/save[/]       Save session\n"
+    f"  [{_A}]/sessions[/]   List sessions\n"
+    f"  [{_A}]/status[/]     Show status\n"
+    f"  [{_A}]/cost[/]       Token usage + cost\n"
+    f"  [{_A}]/clear[/]      Clear output\n"
+    f"  [{_A}]/exit[/]       Quit\n"
+    f"[{_B}]{'─' * 40}[/]\n"
+    f"  [{_D}]Esc[/] cancel   [{_D}]Ctrl+C[/] quit   [{_D}]Ctrl+L[/] clear"
+)
 
 ANTHROPIC_MODELS = {
     "opus": "claude-opus-4-20250514",
@@ -86,13 +104,21 @@ class OpenTFApp(App):
     BINDINGS = [
         ("ctrl+c", "quit", "Quit"),
         ("ctrl+l", "clear", "Clear"),
-        ("escape", "dismiss_overlays", "Dismiss"),
+        ("escape", "cancel_or_dismiss", "Cancel / Dismiss"),
     ]
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
+        from opentf.core.config import load_config
+        self._config = load_config()
+        llm_cfg = self._config.get("llm", {})
+
         self.credentials = CredentialManager()
-        self.llm = LLMClient()
+        self.llm = LLMClient(
+            model=llm_cfg.get("model", "claude-sonnet-4-20250514"),
+            max_tokens=llm_cfg.get("max_tokens", 8192),
+            temperature=llm_cfg.get("temperature", 0.7),
+        )
         self.bus = MessageBus()
         self.registry = AgentRegistry()
         self.orchestrator = Orchestrator(
@@ -107,9 +133,13 @@ class OpenTFApp(App):
         self._current_plan: Plan | None = None
         self._plan_history: list[dict] = []
         self._plan_store = PlanStore()
+        self._session_mgr = SessionManager()
         self._janitor_mode: bool = False
         self._janitor_report: JanitorReport | None = None
         self._pending_approval: dict | None = None
+        self._active_worker = None
+        self._taskforce_pending: bool = False
+        self._taskforce_auto: bool = False
 
     def compose(self) -> ComposeResult:
         yield HeaderBar(id="header")
@@ -146,9 +176,17 @@ class OpenTFApp(App):
     async def _show_welcome(self) -> None:
         try:
             output = self.query_one(OutputDisplay)
-            await output.append_text(
-                "Type a message or press `/` for commands."
-            )
+            if self._session_mgr.has_current():
+                session = self._session_mgr.load()
+                count = session["message_count"] if session else 0
+                await output.append_text(
+                    f"Previous session found ({count} messages). "
+                    "Type `/resume` to continue or start fresh."
+                )
+            else:
+                await output.append_text(
+                    "Type a message or press `/` for commands."
+                )
         except Exception:
             pass
 
@@ -231,11 +269,19 @@ class OpenTFApp(App):
             header.update_model(event.model_id)
             output = self.query_one(OutputDisplay)
             await output.append_text(
-                f"Switched to **{event.short_name}** (`{event.model_id}`)"
+                f"Switched to [bold]{event.short_name}[/] [{_D}]{event.model_id}[/]"
             )
             self.query_one(PromptInput).focus()
         except Exception:
             pass
+
+    def action_cancel_or_dismiss(self) -> None:
+        """Cancel active work if running, otherwise dismiss overlays."""
+        if self._active_worker and self._active_worker.is_running:
+            self._active_worker.cancel()
+            self._active_worker = None
+            return
+        self.action_dismiss_overlays()
 
     def action_dismiss_overlays(self) -> None:
         """Dismiss any open overlays."""
@@ -251,15 +297,17 @@ class OpenTFApp(App):
     # --- Cost helper ---
 
     def _calculate_cost(self) -> float:
-        """Calculate total estimated cost."""
+        """Calculate total estimated cost based on current model."""
+        from opentf.cli.widgets.status import _model_short
+        short = _model_short(self.llm.model)
+        prices = MODEL_PRICING.get(short, MODEL_PRICING["sonnet"])
         u = self.llm.usage
-        cost = (
-            u.input_tokens * SONNET_INPUT_PRICE / 1_000_000
-            + u.output_tokens * SONNET_OUTPUT_PRICE / 1_000_000
-            + u.cache_write_tokens * (SONNET_INPUT_PRICE * 1.25) / 1_000_000
-            + u.cache_read_tokens * (SONNET_INPUT_PRICE * 0.1) / 1_000_000
+        return (
+            u.input_tokens * prices["input"] / 1_000_000
+            + u.output_tokens * prices["output"] / 1_000_000
+            + u.cache_write_tokens * (prices["input"] * 1.25) / 1_000_000
+            + u.cache_read_tokens * (prices["input"] * 0.1) / 1_000_000
         )
-        return cost
 
     # --- Bus messages -> widgets ---
 
@@ -310,6 +358,7 @@ class OpenTFApp(App):
             return
 
         source = message.source
+        log_panel.display = True
 
         if message.type == MessageType.AGENT_REQUEST:
             status = message.payload.get("status", "")
@@ -336,9 +385,13 @@ class OpenTFApp(App):
 
         elif message.type == MessageType.TASK_COMPLETED:
             log_panel.log_event(source, "completed", "done")
+            if source == "main":
+                log_panel.display = False
 
         elif message.type == MessageType.TASK_FAILED:
             log_panel.log_event(source, "failed", "error")
+            if source == "main":
+                log_panel.display = False
 
         elif message.type == MessageType.TASK_REJECTED:
             errors = message.payload.get("errors", [])
@@ -348,11 +401,17 @@ class OpenTFApp(App):
             cmd = message.payload.get("command", "?")
             tool_id = message.payload.get("tool_id", "")
             self._pending_approval = {"tool_id": tool_id, "command": cmd}
+            cmd_prefix = cmd.strip().split()[0] if cmd.strip() else cmd
             try:
                 output = self.query_one(OutputDisplay)
+                if cmd.startswith(("write ", "edit ")):
+                    header = "[bold]File change?[/]"
+                else:
+                    header = "[bold]Run?[/]"
                 self.call_after_refresh(
                     output.append_text,
-                    f"\n**Approve command?** `{cmd}`\n\n  **y** approve  |  **n** deny",
+                    f"\n{header}\n[{_D}]{cmd}[/]\n\n"
+                    f"  [{_S}]y[/] yes   [{_E}]n[/] no   [{_A}]a[/] always allow [{_D}]{cmd_prefix}[/]",
                 )
             except Exception:
                 pass
@@ -378,18 +437,25 @@ class OpenTFApp(App):
         prompt_widget.value = ""
 
         # Approval response
-        if self._pending_approval and text.lower() in ("y", "n", "yes", "no"):
+        if self._pending_approval and text.lower() in ("y", "n", "yes", "no", "a", "always"):
             tool_id = self._pending_approval["tool_id"]
-            approved = text.lower() in ("y", "yes")
-            msg_type = MessageType.APPROVAL_GRANTED if approved else MessageType.APPROVAL_DENIED
+            choice = text.lower()
+            if choice in ("a", "always"):
+                msg_type = MessageType.APPROVAL_ALWAYS
+                status = "Always allowed"
+            elif choice in ("y", "yes"):
+                msg_type = MessageType.APPROVAL_GRANTED
+                status = "Approved"
+            else:
+                msg_type = MessageType.APPROVAL_DENIED
+                status = "Skipped"
             await self.bus.publish(Message(
                 type=msg_type,
                 source="user",
                 payload={"tool_id": tool_id},
             ))
             output = self.query_one(OutputDisplay)
-            status = "Approved" if approved else "Denied"
-            await output.append_text(f"_{status}._")
+            await output.append_text(f"[{_D}]{status}.[/]")
             self._pending_approval = None
             return
 
@@ -418,12 +484,19 @@ class OpenTFApp(App):
         activity = self.query_one(ActivityBar)
 
         activity.clear_agents()
+        try:
+            self.query_one(LogPanel).display = False
+        except Exception:
+            pass
         await output.add_user_message(text)
         await output.show_thinking()
 
         self.conversation_history.append({"role": "user", "content": text})
-        self._start_time = time.monotonic()
-        self._run_pipeline(text)
+        try:
+            self.query_one(HeaderBar).start_timer()
+        except Exception:
+            pass
+        self._active_worker = self._run_pipeline(text)
 
     async def _handle_command(self, cmd: str) -> None:
         output = self.query_one(OutputDisplay)
@@ -432,8 +505,91 @@ class OpenTFApp(App):
         if command == "/plan":
             await self._enter_planning_mode()
 
+        elif command in ("/taskforce", "/tf"):
+            parts = cmd.split(maxsplit=1)
+            rest = parts[1].strip() if len(parts) > 1 else ""
+            auto = rest.startswith("--auto")
+            if auto:
+                rest = rest[len("--auto"):].strip()
+            self._taskforce_pending = True
+            self._taskforce_auto = auto
+            await self._enter_planning_mode()
+            if rest:
+                self._run_plan_iteration(rest)
+
         elif command == "/janitor":
             await self._enter_janitor_mode(cmd)
+
+        elif command == "/resume":
+            parts = cmd.split(maxsplit=1)
+            label = parts[1].strip() if len(parts) > 1 else "current"
+            session = self._session_mgr.load(label)
+            if not session and label == "current":
+                # Fall back to most recent named session
+                sessions = self._session_mgr.list_sessions()
+                if sessions:
+                    label = sessions[-1]["label"]
+                    session = self._session_mgr.load(label)
+            if session:
+                self.conversation_history[:] = session.get("history", [])
+                count = len(self.conversation_history)
+                model = session.get("model", "")
+                await output.append_text(
+                    f"Resumed [bold]{label}[/] [{_D}]({count} messages)[/]"
+                    + (f" [{_D}]{model}[/]" if model else "")
+                )
+            else:
+                await output.append_text(f"No saved session. Try [{_A}]/sessions[/]")
+
+        elif command == "/new":
+            self.conversation_history.clear()
+            self._session_mgr.delete("current")
+            await output.clear_output()
+            await output.append_text("New session started.")
+
+        elif command == "/sessions":
+            sessions = self._session_mgr.list_sessions()
+            if not sessions:
+                await output.append_text("No saved sessions.")
+            else:
+                lines = ["[bold]Saved Sessions[/]\n"]
+                for s in sessions:
+                    lines.append(
+                        f"  [{_A}]{s['label']}[/]  {s['message_count']} msgs"
+                        f"  [{_D}]{s['saved_at'][:10]}[/]"
+                    )
+                await output.append_text("\n".join(lines))
+
+        elif command == "/save":
+            parts = cmd.split(maxsplit=1)
+            label = parts[1].strip().replace(" ", "-").lower() if len(parts) > 1 else "current"
+            if not self.conversation_history:
+                await output.append_text("Nothing to save -- conversation is empty.")
+            else:
+                self._session_mgr.save(
+                    self.conversation_history, self.llm.model, label=label,
+                )
+                await output.append_text(f"Session saved as [bold]{label}[/]")
+
+        elif command == "/undo":
+            from opentf.tools.file_tools import undo_last
+            result = undo_last()
+            await output.append_text(result)
+
+        elif command == "/review":
+            from opentf.tools.file_tools import get_review_mode, set_review_mode
+            parts = cmd.split(maxsplit=1)
+            if len(parts) < 2:
+                status = "on" if get_review_mode() else "off"
+                await output.append_text(f"Review mode: [bold]{status}[/]")
+            elif parts[1].strip().lower() == "on":
+                set_review_mode(True)
+                await output.append_text("Review mode [bold]on[/] -- file changes require approval.")
+            elif parts[1].strip().lower() == "off":
+                set_review_mode(False)
+                await output.append_text("Review mode [bold]off[/] -- file changes auto-accepted.")
+            else:
+                await output.append_text(f"Usage: [{_A}]/review on[/] or [{_A}]/review off[/]")
 
         elif command == "/help":
             await output.append_text(HELP_TEXT)
@@ -443,32 +599,39 @@ class OpenTFApp(App):
             key = self.credentials.resolve_api_key()
             redacted = self.credentials.redact_key(key) if key else "(none)"
             await output.append_text(
-                f"**Status** -- auth: {source} | key: `{redacted}` | "
-                f"model: `{self.llm.model}` | tokens: {self.llm.usage.total:,}"
+                f"[bold]Status[/]\n"
+                f"  auth    [{_D}]{source}[/]\n"
+                f"  key     [{_D}]{redacted}[/]\n"
+                f"  model   [{_D}]{self.llm.model}[/]\n"
+                f"  tokens  [{_D}]{self.llm.usage.total:,}[/]"
             )
 
         elif command == "/cost":
+            from opentf.cli.widgets.status import _model_short
+            short = _model_short(self.llm.model)
+            prices = MODEL_PRICING.get(short, MODEL_PRICING["sonnet"])
             inp = self.llm.usage.input_tokens
             out = self.llm.usage.output_tokens
             cw = self.llm.usage.cache_write_tokens
             cr = self.llm.usage.cache_read_tokens
 
-            input_cost = inp * SONNET_INPUT_PRICE / 1_000_000
-            output_cost = out * SONNET_OUTPUT_PRICE / 1_000_000
-            cache_w_cost = cw * (SONNET_INPUT_PRICE * 1.25) / 1_000_000
-            cache_r_cost = cr * (SONNET_INPUT_PRICE * 0.1) / 1_000_000
+            input_cost = inp * prices["input"] / 1_000_000
+            output_cost = out * prices["output"] / 1_000_000
+            cache_w_cost = cw * (prices["input"] * 1.25) / 1_000_000
+            cache_r_cost = cr * (prices["input"] * 0.1) / 1_000_000
             total_cost = input_cost + output_cost + cache_w_cost + cache_r_cost
 
-            parts = [
-                f"input: {inp:,} (${input_cost:.4f})",
-                f"output: {out:,} (${output_cost:.4f})",
+            cost_lines = [
+                f"[bold]Cost[/] [{_D}]({short})[/]",
+                f"  input        [{_D}]{inp:,} tokens[/]   ${input_cost:.4f}",
+                f"  output       [{_D}]{out:,} tokens[/]   ${output_cost:.4f}",
             ]
             if cw or cr:
-                parts.append(f"cache write: {cw:,} (${cache_w_cost:.4f})")
-                parts.append(f"cache read: {cr:,} (${cache_r_cost:.4f})")
-            await output.append_text(
-                f"**Cost** -- {' | '.join(parts)} | total: **${total_cost:.4f}**"
-            )
+                cost_lines.append(f"  cache write  [{_D}]{cw:,} tokens[/]   ${cache_w_cost:.4f}")
+                cost_lines.append(f"  cache read   [{_D}]{cr:,} tokens[/]   ${cache_r_cost:.4f}")
+            cost_lines.append(f"[{_B}]{'─' * 36}[/]")
+            cost_lines.append(f"  [bold]total[/]                    [bold]${total_cost:.4f}[/]")
+            await output.append_text("\n".join(cost_lines))
 
         elif command == "/model":
             parts = cmd.split(maxsplit=1)
@@ -494,11 +657,11 @@ class OpenTFApp(App):
                     self.llm.model = model_id
                     short = next((k for k, v in ANTHROPIC_MODELS.items() if v == model_id), model_id)
                     self.query_one(HeaderBar).update_model(model_id)
-                    await output.append_text(f"Switched to **{short}** (`{model_id}`)")
+                    await output.append_text(f"Switched to [bold]{short}[/] [{_D}]{model_id}[/]")
                 else:
-                    models_list = ", ".join(f"`{k}`" for k in ANTHROPIC_MODELS)
+                    models_list = ", ".join(f"[{_A}]{k}[/]" for k in ANTHROPIC_MODELS)
                     await output.append_text(
-                        f"Unknown model: `{parts[1].strip()}`. Available: {models_list}"
+                        f"Unknown model: {parts[1].strip()}. Available: {models_list}"
                     )
 
         elif command == "/compact":
@@ -518,7 +681,7 @@ class OpenTFApp(App):
                     )
                     activity.complete_agent("Compactor", "done")
                 except Exception as exc:
-                    await output.append_text(f"**Error:** {exc}")
+                    await output.append_text(f"[{_E}]Error:[/] {exc}")
                     activity.fail_agent("Compactor", "failed")
                 finally:
                     activity.clear_agents()
@@ -534,7 +697,7 @@ class OpenTFApp(App):
 
         elif command == "/logout":
             self.credentials.clear_credentials()
-            await output.append_text("Credentials cleared. `/login` to set a new key.")
+            await output.append_text(f"Credentials cleared. [{_A}]/login[/] to set a new key.")
 
         elif command == "/clear":
             self.action_clear()
@@ -543,7 +706,7 @@ class OpenTFApp(App):
             self.exit()
 
         else:
-            await output.append_text(f"Unknown command: `{command}`. Try `/help`.")
+            await output.append_text(f"Unknown command: {command}. Try [{_A}]/help[/]")
 
     @work(thread=False)
     async def _run_pipeline(self, user_input: str) -> None:
@@ -593,12 +756,14 @@ class OpenTFApp(App):
                         "role": "assistant",
                         "content": out.get("response", str(out)),
                     })
+                    self._session_mgr.save(
+                        self.conversation_history, self.llm.model,
+                    )
                 else:
                     error_text = "\n".join(result.errors) or "Unknown error"
-                    await output.append_text(f"**Error:** {error_text}")
+                    await output.append_text(f"[{_E}]Error:[/] {error_text}")
 
-            elapsed = time.monotonic() - self._start_time
-            header.update_elapsed(f"{elapsed:.1f}s")
+            header.stop_timer()
             header.update_tokens(self.llm.usage.total)
             header.update_cost(self._calculate_cost())
 
@@ -607,10 +772,21 @@ class OpenTFApp(App):
             except Exception:
                 pass
 
+        except asyncio.CancelledError:
+            await output.hide_thinking()
+            await output.end_stream()
+            await output.append_text(f"[{_D}]Cancelled.[/]")
+            header.stop_timer()
+            try:
+                self.query_one(ActivityBar).clear_agents()
+            except Exception:
+                pass
+
         except Exception as exc:
             await output.hide_thinking()
-            await output.append_text(f"**Error:** {exc}")
+            await output.append_text(f"[{_E}]Error:[/] {exc}")
             try:
+                header.stop_timer()
                 activity = self.query_one(ActivityBar)
                 activity.fail_agent("Orchestrator", str(exc)[:40])
                 await asyncio.sleep(2)
@@ -639,9 +815,11 @@ class OpenTFApp(App):
 
         prompt_widget.set_mode("plan")
         await output.append_text(
-            "**Planning Mode**\n\n"
-            "Describe your goal. The Planner will research, design, and present a plan.\n"
-            "Commands: `/confirm` `/cancel` `/show`"
+            f"[bold {_A}]{'─' * 40}[/]\n"
+            f"  [bold]Planning Mode[/]\n"
+            f"[{_B}]{'─' * 40}[/]\n"
+            f"  Describe your goal.\n"
+            f"  [{_A}]/confirm[/]  [{_A}]/cancel[/]  [{_A}]/show[/]"
         )
         prompt_widget.focus()
 
@@ -663,13 +841,19 @@ class OpenTFApp(App):
                 await output.append_text("No plan to confirm. Describe your goal first.")
                 return
             self._current_plan.status = "confirmed"
-            path = self._plan_store.save(self._current_plan)
-            await output.append_text(
-                f"Plan saved to `{path}`\n\n**Executing plan...**"
-            )
+            self._plan_store.save(self._current_plan)
             plan = self._current_plan
             self._exit_planning_mode()
-            self._execute_plan(plan)
+
+            if self._taskforce_pending:
+                # Launch taskforce with the confirmed plan
+                self._taskforce_pending = False
+                await output.append_text("Plan confirmed. Launching task force...")
+                self._active_worker = self._launch_taskforce(plan)
+            else:
+                # Normal plan execution
+                await output.append_text("Plan confirmed. Executing...")
+                self._execute_plan(plan)
 
         elif command in ("/cancel", "/exit"):
             self._exit_planning_mode()
@@ -683,8 +867,7 @@ class OpenTFApp(App):
 
         else:
             await output.append_text(
-                f"Unknown plan command: `{command}`. "
-                f"Use `/confirm`, `/cancel`, or `/show`."
+                f"Unknown: {command}. Try [{_A}]/confirm[/] [{_A}]/cancel[/] [{_A}]/show[/]"
             )
 
     @work(thread=False)
@@ -695,12 +878,15 @@ class OpenTFApp(App):
         activity.clear_agents()
         await output.add_user_message(text)
         await output.show_thinking()
-        self._start_time = time.monotonic()
+        try:
+            self.query_one(HeaderBar).start_timer()
+        except Exception:
+            pass
 
         planner = self.registry.get("planner")
         if not planner:
             await output.hide_thinking()
-            await output.append_text("**Error:** Planner agent not available.")
+            await output.append_text(f"[{_E}]Error:[/] Planner agent not available.")
             return
 
         try:
@@ -710,7 +896,7 @@ class OpenTFApp(App):
             action = "refining plan..." if self._current_plan else "researching..."
             activity.add_agent("Planner", action, "active")
 
-            constraints = {}
+            constraints = {"_bus": self.bus}
             if self._current_plan:
                 constraints["current_plan"] = self._current_plan.to_dict()
 
@@ -739,22 +925,22 @@ class OpenTFApp(App):
                     self._plan_history.append({"role": "assistant", "content": response})
 
                 await output.append_text(
-                    "_Type changes to refine, `/show` to re-display, "
-                    "`/confirm` to execute, `/cancel` to discard._"
+                    f"[{_D}]Refine, /show, /confirm, or /cancel[/]"
                 )
             else:
                 error_text = "\n".join(result.errors) or "Unknown error"
-                await output.append_text(f"**Error:** {error_text}")
+                await output.append_text(f"[{_E}]Error:[/] {error_text}")
 
-            elapsed = time.monotonic() - self._start_time
-            self.query_one(HeaderBar).update_elapsed(f"{elapsed:.1f}s")
-            self.query_one(HeaderBar).update_tokens(self.llm.usage.total)
+            header = self.query_one(HeaderBar)
+            header.stop_timer()
+            header.update_tokens(self.llm.usage.total)
 
         except Exception as exc:
             await output.hide_thinking()
-            await output.append_text(f"**Error:** {exc}")
+            await output.append_text(f"[{_E}]Error:[/] {exc}")
         finally:
             try:
+                self.query_one(HeaderBar).stop_timer()
                 activity.clear_agents()
             except Exception:
                 pass
@@ -763,7 +949,7 @@ class OpenTFApp(App):
     async def _execute_plan(self, plan: Plan) -> None:
         output = self.query_one(OutputDisplay)
         header = self.query_one(HeaderBar)
-        self._start_time = time.monotonic()
+        header.start_timer()
 
         async def on_step_update(step):
             icon = {
@@ -775,21 +961,25 @@ class OpenTFApp(App):
 
             status_text = ""
             if step.status == StepStatus.DONE:
-                status_text = " -- done"
+                status_text = f" [{_S}]done[/]"
             elif step.status == StepStatus.FAILED:
-                status_text = f" -- failed: {step.error[:60]}"
+                status_text = f" [{_E}]{step.error[:60]}[/]"
             elif step.status == StepStatus.SKIPPED:
-                status_text = " -- skipped"
+                status_text = f" [{_D}]skipped[/]"
 
             await output.append_text(
-                f"  {icon} **{step.id}** {step.name} (`{step.agent_type}`){status_text}"
+                f"  {icon} [bold]{step.id}[/] {step.name} [{_D}]{step.agent_type}[/]{status_text}"
             )
 
         try:
-            await output.append_text(f"## Executing: {plan.label}")
+            await output.append_text(
+                f"[bold {_A}]{'─' * 40}[/]\n"
+                f"  [bold]Executing:[/] {plan.label}\n"
+                f"[{_B}]{'─' * 40}[/]"
+            )
 
             for phase in plan.phases:
-                await output.append_text(f"### {phase.name}")
+                await output.append_text(f"\n  [bold]{phase.name}[/]")
 
             result_plan = await self.orchestrator.execute_plan(
                 plan,
@@ -797,23 +987,20 @@ class OpenTFApp(App):
                 on_step_update=on_step_update,
             )
 
-            elapsed = time.monotonic() - self._start_time
-
-            if result_plan.status == "completed":
-                await output.append_text(f"**Plan completed** in {elapsed:.1f}s")
-            else:
-                await output.append_text(f"**Plan failed** after {elapsed:.1f}s")
-
-            self._plan_store.save(result_plan)
-
-            header.update_elapsed(f"{elapsed:.1f}s")
+            header.stop_timer()
             header.update_tokens(self.llm.usage.total)
             header.update_cost(self._calculate_cost())
 
+            summary = result_plan.format_completion_summary()
+            await output.append_text(summary)
+
+            self._plan_store.save(result_plan)
+
         except Exception as exc:
-            await output.append_text(f"**Error during plan execution:** {exc}")
+            await output.append_text(f"[{_E}]Error:[/] Plan execution failed: {exc}")
         finally:
             try:
+                header.stop_timer()
                 self.query_one(ActivityBar).clear_agents()
             except Exception:
                 pass
@@ -831,12 +1018,126 @@ class OpenTFApp(App):
         prompt_widget = self.query_one(PromptInput)
 
         prompt_widget.set_mode("janitor")
-        scope_msg = f" (scope: `{scope}`)" if scope else ""
+        scope_msg = f" [{_D}]{scope}[/]" if scope else ""
         await output.append_text(
-            f"**Janitor Mode**{scope_msg}\n\nScanning codebase for issues..."
+            f"[bold {_A}]{'─' * 40}[/]\n"
+            f"  [bold]Janitor Mode[/]{scope_msg}\n"
+            f"[{_B}]{'─' * 40}[/]\n"
+            f"  Scanning codebase..."
         )
         prompt_widget.focus()
         self._run_janitor_scan(scope)
+
+    # --- Task Force ---
+
+    @work(thread=False)
+    async def _launch_taskforce(self, plan: Plan) -> None:
+        from opentf.core.taskforce import TaskForce
+        from opentf.cli.widgets.taskforce_display import TaskForceDisplay
+
+        header = self.query_one(HeaderBar)
+        header.start_timer()
+
+        # Mount dedicated taskforce display, hide normal output
+        output = self.query_one(OutputDisplay)
+        output.display = False
+
+        tf_display = TaskForceDisplay(
+            label=plan.label,
+            agents=[],  # Will be populated after blueprint generation
+            id="tf-display",
+        )
+        await self.mount(tf_display, before=self.query_one(PromptInput))
+
+        tf = TaskForce(llm=self.llm, bus=self.bus)
+
+        async def on_status(agent: str, event: str, detail: str) -> None:
+            """Update the taskforce display from agent events."""
+            try:
+                display = self.query_one(TaskForceDisplay)
+                if event == "waiting":
+                    display.agents.add_agent(agent)
+                elif event == "active":
+                    display.agents.add_agent(agent)
+                    display.agents.set_active(agent, detail)
+                    display.live.log_status(agent, detail)
+                elif event == "done":
+                    display.agents.set_done(agent)
+                    display.live.log_status(agent, detail)
+                    # Update progress
+                    done = sum(1 for c in blueprint.components if c.status == "done") if blueprint else 0
+                    total = len(blueprint.components) if blueprint else 0
+                    display.header.set_progress(done, total)
+                elif event == "failed":
+                    display.agents.set_failed(agent, detail)
+                    display.live.log_result(agent, "", False, detail)
+                elif event == "tool":
+                    display.live.log_tool(agent, detail)
+                elif event == "result":
+                    display.live.log_result(agent, "", True, detail)
+            except Exception:
+                pass
+
+        # Subscribe to bus for tool events -> live panel
+        async def on_bus_tool(msg) -> None:
+            try:
+                display = self.query_one(TaskForceDisplay)
+                if msg.type == MessageType.TOOL_INVOKED:
+                    tool = msg.payload.get("tool", "?")
+                    summary = msg.payload.get("input_summary", "")[:60]
+                    display.live.log_tool(msg.source, tool, summary)
+                elif msg.type == MessageType.TOOL_RESULT:
+                    tool = msg.payload.get("tool", "?")
+                    ok = msg.payload.get("success", True)
+                    summary = msg.payload.get("summary", "")[:60]
+                    display.live.log_result(msg.source, tool, ok, summary)
+            except Exception:
+                pass
+
+        self.bus.subscribe(MessageType.TOOL_INVOKED, on_bus_tool)
+        self.bus.subscribe(MessageType.TOOL_RESULT, on_bus_tool)
+
+        blueprint = None
+        try:
+            blueprint = await tf.run(plan, on_status=on_status)
+            header.stop_timer()
+            header.update_tokens(self.llm.usage.total)
+            header.update_cost(self._calculate_cost())
+
+        except asyncio.CancelledError:
+            header.stop_timer()
+
+        except Exception as exc:
+            header.stop_timer()
+            try:
+                self.query_one(TaskForceDisplay).live.log_status("taskforce", f"Error: {exc}")
+            except Exception:
+                pass
+
+        finally:
+            self.bus.unsubscribe(MessageType.TOOL_INVOKED, on_bus_tool)
+            self.bus.unsubscribe(MessageType.TOOL_RESULT, on_bus_tool)
+            self._taskforce_pending = False
+            self._taskforce_auto = False
+
+            # Wait a moment so user can see final state, then restore
+            await asyncio.sleep(2)
+            try:
+                tf_widget = self.query_one(TaskForceDisplay)
+                tf_widget.header.stop()
+                await tf_widget.remove()
+            except Exception:
+                pass
+            output.display = True
+
+            # Show summary in normal output
+            if blueprint:
+                await output.append_text(blueprint.format_summary())
+
+            try:
+                self.query_one(ActivityBar).clear_agents()
+            except Exception:
+                pass
 
     def _exit_janitor_mode(self) -> None:
         self._janitor_mode = False
@@ -854,11 +1155,11 @@ class OpenTFApp(App):
 
         activity.clear_agents()
         activity.add_agent("Janitor", "scanning...", "active")
-        self._start_time = time.monotonic()
+        header.start_timer()
 
         janitor = self.registry.get("janitor")
         if not janitor:
-            await output.append_text("**Error:** Janitor agent not available.")
+            await output.append_text(f"[{_E}]Error:[/] Janitor agent not available.")
             self._exit_janitor_mode()
             return
 
@@ -892,28 +1193,28 @@ class OpenTFApp(App):
                     self._exit_janitor_mode()
                 else:
                     await output.append_text(
-                        f"**{count} issues found.** Review commands:\n\n"
-                        "  `accept N` or `a N` -- accept issue J-N\n"
-                        "  `reject N` or `r N` -- reject issue J-N\n"
-                        "  `accept all` -- accept all issues\n"
-                        "  `reject all` -- reject all issues\n"
-                        "  `show N` -- show detail for issue J-N\n"
-                        "  `list` -- re-display the report\n"
-                        "  `/done` -- apply accepted fixes\n"
-                        "  `/cancel` -- discard and exit"
+                        f"[bold]{count} issues found.[/]\n\n"
+                        f"  [{_A}]accept N[/]   accept issue J-N\n"
+                        f"  [{_A}]reject N[/]   reject issue J-N\n"
+                        f"  [{_A}]accept all[/] accept all\n"
+                        f"  [{_A}]reject all[/] reject all\n"
+                        f"  [{_A}]show N[/]     show detail\n"
+                        f"  [{_A}]list[/]       re-display report\n"
+                        f"  [{_A}]/done[/]      apply accepted fixes\n"
+                        f"  [{_A}]/cancel[/]    discard and exit"
                     )
             else:
                 error_text = "\n".join(result.errors) or "Unknown error"
-                await output.append_text(f"**Error:** {error_text}")
+                await output.append_text(f"[{_E}]Error:[/] {error_text}")
                 self._exit_janitor_mode()
 
-            elapsed = time.monotonic() - self._start_time
-            header.update_elapsed(f"{elapsed:.1f}s")
+            header.stop_timer()
             header.update_tokens(self.llm.usage.total)
             header.update_cost(self._calculate_cost())
 
         except Exception as exc:
-            await output.append_text(f"**Error:** {exc}")
+            header.stop_timer()
+            await output.append_text(f"[{_E}]Error:[/] {exc}")
             self._exit_janitor_mode()
         finally:
             try:
@@ -940,7 +1241,7 @@ class OpenTFApp(App):
             elif len(parts) > 1:
                 await self._toggle_issue(report, parts[1], "accepted", output)
             else:
-                await output.append_text("Usage: `accept N` or `accept all`")
+                await output.append_text(f"Usage: [{_A}]accept N[/] or [{_A}]accept all[/]")
 
         elif cmd in ("reject", "r"):
             if len(parts) > 1 and parts[1].lower() == "all":
@@ -950,21 +1251,20 @@ class OpenTFApp(App):
             elif len(parts) > 1:
                 await self._toggle_issue(report, parts[1], "rejected", output)
             else:
-                await output.append_text("Usage: `reject N` or `reject all`")
+                await output.append_text(f"Usage: [{_A}]reject N[/] or [{_A}]reject all[/]")
 
         elif cmd == "show":
             if len(parts) > 1:
                 await self._show_issue_detail(report, parts[1], output)
             else:
-                await output.append_text("Usage: `show N`")
+                await output.append_text(f"Usage: [{_A}]show N[/]")
 
         elif cmd == "list":
             await output.append_text(report.format_markdown())
 
         else:
             await output.append_text(
-                f"Unknown command: `{text}`. "
-                "Try `accept N`, `reject N`, `show N`, `list`, `/done`, or `/cancel`."
+                f"Unknown: {text}. Try [{_A}]accept N[/], [{_A}]reject N[/], [{_A}]show N[/], [{_A}]list[/], [{_A}]/done[/], [{_A}]/cancel[/]"
             )
 
     async def _toggle_issue(
@@ -974,7 +1274,7 @@ class OpenTFApp(App):
         try:
             num = int(num_str)
         except ValueError:
-            await output.append_text(f"Invalid issue number: `{num_str}`")
+            await output.append_text(f"Invalid issue number: {num_str}")
             return
 
         issue = report.find_issue(num)
@@ -985,7 +1285,7 @@ class OpenTFApp(App):
         issue.status = status
         icon = "(x)" if status == "accepted" else "(-)"
         await output.append_text(
-            f"{icon} **[{issue.id}]** {status} -- {issue.description[:60]}"
+            f"{icon} [bold]{issue.id}[/] {status} [{_D}]{issue.description[:60]}[/]"
         )
 
     async def _show_issue_detail(
@@ -995,7 +1295,7 @@ class OpenTFApp(App):
         try:
             num = int(num_str)
         except ValueError:
-            await output.append_text(f"Invalid issue number: `{num_str}`")
+            await output.append_text(f"Invalid issue number: {num_str}")
             return
 
         issue = report.find_issue(num)
@@ -1017,7 +1317,7 @@ class OpenTFApp(App):
             accepted = self._janitor_report.accepted_issues()
             if not accepted:
                 await output.append_text(
-                    "No issues accepted. Use `accept N` to accept issues first."
+                    f"No issues accepted. Use [{_A}]accept N[/] first."
                 )
                 return
 
@@ -1048,7 +1348,7 @@ class OpenTFApp(App):
 
         activity.clear_agents()
         activity.add_agent("Janitor", "applying fixes...", "active")
-        self._start_time = time.monotonic()
+        header.start_timer()
 
         try:
             from opentf.models.task import Task
@@ -1056,7 +1356,7 @@ class OpenTFApp(App):
 
             janitor = self.registry.get("janitor")
             if not janitor:
-                await output.append_text("**Error:** Janitor agent not available.")
+                await output.append_text(f"[{_E}]Error:[/] Janitor agent not available.")
                 return
 
             issues_data = []
@@ -1090,15 +1390,14 @@ class OpenTFApp(App):
                 await output.append_text(response)
             else:
                 error_text = "\n".join(result.errors) or "Unknown error"
-                await output.append_text(f"**Error:** {error_text}")
+                await output.append_text(f"[{_E}]Error:[/] {error_text}")
 
-            elapsed = time.monotonic() - self._start_time
-            header.update_elapsed(f"{elapsed:.1f}s")
+            header.stop_timer()
             header.update_tokens(self.llm.usage.total)
             header.update_cost(self._calculate_cost())
 
         except Exception as exc:
-            await output.append_text(f"**Error:** {exc}")
+            await output.append_text(f"[{_E}]Error:[/] {exc}")
         finally:
             self._exit_janitor_mode()
             try:

@@ -34,11 +34,17 @@ except ImportError:
 PLANNER_PROMPT = """\
 You are a planning agent. You create structured execution plans.
 
-You have tools to gather information: web_search, read_url, read_file, list_directory, search_files.
-Use them if you need to understand the project or research a topic BEFORE creating the plan.
-For simple tasks, skip research and just create the plan directly.
+You have tools to gather context: read_file, list_directory, search_files.
+For simple tasks, skip tools and output the plan directly.
 
-When ready, output your plan as JSON (no other text):
+CRITICAL: When you are ready to present the plan, output ONLY the JSON object.
+Do not add any commentary, explanation, or markdown around it. Just the raw JSON.
+
+Step descriptions must be actionable instructions an AI coding agent can execute directly.
+Bad:  "Set up the project structure"
+Good: "Create src/main.py with a Flask app that has a / route returning Hello World"
+
+JSON format:
 {{
   "label": "short-kebab-case-label",
   "description": "one-line summary",
@@ -50,10 +56,10 @@ When ready, output your plan as JSON (no other text):
         {{
           "id": "1.1",
           "name": "Step name",
-          "description": "what this step does",
-          "agent_type": "code|file_system|research|data|conversation",
+          "description": "Actionable instruction the executor will follow",
+          "agent_type": "code",
           "depends_on": [],
-          "success_criteria": "specific criteria for completion"
+          "success_criteria": "how to verify this step is done"
         }}
       ]
     }}
@@ -61,12 +67,13 @@ When ready, output your plan as JSON (no other text):
 }}
 
 Rules:
-- Every step specifies which specialist handles it
-- Dependencies reference step IDs
-- Steps within a phase can run in parallel if no dependencies
-- Each phase completes before the next
-- Step IDs: phase_number.step_number (1.1, 1.2, 2.1)
-- For simple tasks, keep the plan simple (1-3 steps)"""
+- For simple tasks: 1 phase, 1-3 steps. Do not over-plan.
+- Step descriptions are commands to an executor, not summaries.
+- Every step must be self-contained (the executor has no prior context).
+- agent_type is always "code" unless the step is purely conversational.
+- Step IDs: phase.step (1.1, 1.2, 2.1)
+- Dependencies reference step IDs.
+- Steps in a phase run in parallel unless they have dependencies."""
 
 ITERATE_PROMPT = """\
 Modify this plan based on the user's request.
@@ -136,9 +143,15 @@ class PlannerAgent(BaseAgent):
 
         plan_data = self._parse_plan_json(text)
         if not plan_data:
+            log.warning("Plan JSON parse failed. Raw text (%d chars): %s", len(text), text[:500])
+            # If the LLM produced text but we couldn't parse JSON from it,
+            # return the text as the response so the user sees what happened
+            error_msg = "Failed to generate plan."
+            if text.strip():
+                error_msg += f"\n\nPlanner output:\n{text[:400]}"
             return AgentResult(
                 success=False,
-                errors=["Failed to generate plan. Try a more specific description."],
+                errors=[error_msg],
                 token_usage=tokens,
             )
 
@@ -212,13 +225,44 @@ class PlannerAgent(BaseAgent):
     @staticmethod
     def _parse_plan_json(text: str) -> dict[str, Any] | None:
         text = text.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-            text = text.rsplit("```", 1)[0].strip()
+
+        # Strategy 1: Extract content from any code fence (not just leading)
+        import re
+        fence_match = re.search(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL)
+        if fence_match:
+            fenced = fence_match.group(1).strip()
+            try:
+                data = json.loads(fenced)
+                if "phases" in data:
+                    return data
+            except json.JSONDecodeError:
+                pass
+
+        # Strategy 2: Direct parse of entire text
         try:
             data = json.loads(text)
-            if "phases" not in data:
-                return None
-            return data
+            if "phases" in data:
+                return data
         except json.JSONDecodeError:
-            return None
+            pass
+
+        # Strategy 3: Find JSON by matching braces
+        # Walk through the text to find a top-level { and its matching }
+        for i, ch in enumerate(text):
+            if ch == "{":
+                depth = 0
+                for j in range(i, len(text)):
+                    if text[j] == "{":
+                        depth += 1
+                    elif text[j] == "}":
+                        depth -= 1
+                        if depth == 0:
+                            candidate = text[i:j + 1]
+                            try:
+                                data = json.loads(candidate)
+                                if "phases" in data:
+                                    return data
+                            except json.JSONDecodeError:
+                                pass
+                            break
+        return None

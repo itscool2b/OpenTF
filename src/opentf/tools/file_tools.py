@@ -23,6 +23,77 @@ class ApprovalRequired(Exception):
         super().__init__(f"Approval required for: {command}")
 
 
+# --- Review mode ---
+
+_review_mode = False
+
+
+def set_review_mode(enabled: bool) -> None:
+    """Toggle manual review for file writes/edits."""
+    global _review_mode
+    _review_mode = enabled
+
+
+def get_review_mode() -> bool:
+    return _review_mode
+
+
+# --- Session allowlist (commands user said "always allow") ---
+
+_session_allowlist: set[str] = set()
+
+
+def add_to_session_allowlist(command: str) -> None:
+    """Add a command prefix to the session allowlist."""
+    prefix = command.strip().split()[0]
+    _session_allowlist.add(prefix)
+
+
+def is_session_allowed(command: str) -> bool:
+    """Check if command matches a session-allowed prefix."""
+    cmd = command.strip()
+    return any(cmd.startswith(prefix) for prefix in _session_allowlist)
+
+
+# --- File backup / undo ---
+
+BACKUP_DIR = Path.cwd() / ".opentf" / "backups"
+_file_backups: list[dict] = []
+
+
+def _backup_file(path: Path) -> None:
+    """Save a copy before modification."""
+    if not path.exists():
+        _file_backups.append({"path": str(path), "existed": False})
+        return
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    backup_path = BACKUP_DIR / f"{path.name}.{len(_file_backups)}"
+    backup_path.write_text(path.read_text(errors="replace"))
+    _file_backups.append({
+        "path": str(path),
+        "existed": True,
+        "backup": str(backup_path),
+    })
+
+
+def undo_last() -> str:
+    """Undo the last file modification."""
+    if not _file_backups:
+        return "Nothing to undo."
+    entry = _file_backups.pop()
+    path = Path(entry["path"])
+    if not entry["existed"]:
+        if path.exists():
+            path.unlink()
+        return f"Removed {path} (was newly created)"
+    backup = Path(entry["backup"])
+    if backup.exists():
+        path.write_text(backup.read_text())
+        backup.unlink()
+        return f"Restored {path}"
+    return f"Backup not found for {path}"
+
+
 # --- Sandboxing config ---
 
 ALLOWED_BASE_DIRS = [Path.cwd()]
@@ -217,6 +288,11 @@ async def handle_write_file(input_data: dict[str, Any]) -> str:
     path = validate_path(input_data["path"])
     content = input_data["content"]
 
+    if _review_mode and not input_data.get("_approved"):
+        preview = content[:300].replace("\n", "\n    ")
+        raise ApprovalRequired(f"write {path} ({len(content)} chars)\n    {preview}")
+
+    _backup_file(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
     return f"Written {len(content)} chars to {path}"
@@ -232,6 +308,13 @@ async def handle_edit_file(input_data: dict[str, Any]) -> str:
         return "Error: old_text cannot be empty"
     if old_text == new_text:
         return "No changes needed -- old_text and new_text are identical"
+
+    if _review_mode and not input_data.get("_approved"):
+        old_lines = old_text[:200].replace("\n", "\n    - ")
+        new_lines = new_text[:200].replace("\n", "\n    + ")
+        raise ApprovalRequired(
+            f"edit {path}\n    - {old_lines}\n    + {new_lines}"
+        )
     if not path.exists():
         return f"Error: file not found: {path}"
     if not path.is_file():
@@ -255,6 +338,7 @@ async def handle_edit_file(input_data: dict[str, Any]) -> str:
             "Provide a longer or more specific old_text that matches exactly once."
         )
 
+    _backup_file(path)
     new_content = content.replace(old_text, new_text, 1)
     path.write_text(new_content)
 
@@ -313,34 +397,53 @@ def _is_dangerous(command: str) -> bool:
     return any(pat in cmd_lower for pat in DANGEROUS_PATTERNS)
 
 
-def make_command_handler(allowed_commands: list[str]) -> Callable:
-    """Create a run_command handler with a specific command allowlist."""
+async def _execute_command(command: str) -> str:
+    """Execute a shell command with output capture."""
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=str(ALLOWED_BASE_DIRS[0]),
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        output = stdout.decode(errors="replace")
+        if stderr:
+            output += "\n" + stderr.decode(errors="replace")
+        if len(output) > MAX_OUTPUT_LENGTH:
+            output = output[:MAX_OUTPUT_LENGTH] + "\n... (truncated)"
+        return output
+    except asyncio.TimeoutError:
+        return "Error: command timed out (30s limit)"
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+def make_command_handler(safe_commands: list[str]) -> Callable:
+    """Create a run_command handler with Claude Code style permissions.
+
+    Safe commands auto-approve. Everything else needs user approval.
+    User can say yes (once), no (skip), or always (session-wide).
+    """
 
     async def handler(input_data: dict[str, Any]) -> str:
         command = input_data["command"]
-        validate_command(command, allowed_commands)
 
-        if _is_dangerous(command):
-            raise ApprovalRequired(command)
+        # Already approved (re-call after user said yes/always)
+        if input_data.get("_approved"):
+            return await _execute_command(command)
 
-        try:
-            proc = await asyncio.create_subprocess_shell(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                cwd=str(ALLOWED_BASE_DIRS[0]),
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-            output = stdout.decode(errors="replace")
-            if stderr:
-                output += "\n" + stderr.decode(errors="replace")
-            if len(output) > MAX_OUTPUT_LENGTH:
-                output = output[:MAX_OUTPUT_LENGTH] + "\n... (truncated)"
-            return output
-        except asyncio.TimeoutError:
-            return "Error: command timed out (30s limit)"
-        except Exception as exc:
-            return f"Error: {exc}"
+        # Session allowlist (user said "always" earlier)
+        if is_session_allowed(command):
+            return await _execute_command(command)
+
+        # Safe commands (read-only, auto-approve)
+        cmd_stripped = command.strip()
+        if any(cmd_stripped.startswith(safe) for safe in safe_commands):
+            return await _execute_command(command)
+
+        # Everything else needs approval
+        raise ApprovalRequired(command)
 
     return handler
 

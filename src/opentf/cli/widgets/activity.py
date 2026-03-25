@@ -65,23 +65,26 @@ class ActivityBar(Static):
         self.update(" ")
 
     def _refresh_bar(self) -> None:
+        B = COLORS['border']
+        D = COLORS['text_dim']
         parts = []
         for name, info in self._agents.items():
             state = info["state"]
             action = info["action"]
             if state == "active":
                 frame = SPINNER_FRAMES[self._frame % len(SPINNER_FRAMES)]
-                parts.append(f"[{COLORS['text']}]{frame}[/] [bold]{name}[/] {action}")
+                parts.append(f"[{COLORS['accent']}]{frame}[/] [bold]{name}[/] [{D}]{action}[/]")
             elif state == "done":
-                parts.append(f"[{COLORS['success']}]>[/] [bold]{name}[/] {action}")
+                parts.append(f"[{COLORS['success']}]>[/] [bold]{name}[/] [{D}]{action}[/]")
             elif state == "error":
-                parts.append(f"[{COLORS['error']}]x[/] [bold]{name}[/] {action}")
+                parts.append(f"[{COLORS['error']}]x[/] [bold]{name}[/] [{D}]{action}[/]")
             else:
-                parts.append(f"[{COLORS['text_muted']}].[/] [bold]{name}[/] {action}")
+                parts.append(f"[{COLORS['text_muted']}].[/] [bold]{name}[/] [{D}]{action}[/]")
 
-        text = "  ".join(parts) if parts else " "
+        sep = f" [{B}]|[/] "
+        text = sep.join(parts) if parts else " "
 
         if self._tool_count > 0:
-            text += f"  [{COLORS['text_muted']}][{self._tool_count} tools][/]"
+            text += f" [{B}]|[/] [{COLORS['text_muted']}]{self._tool_count} tools[/]"
 
         self.update(text)

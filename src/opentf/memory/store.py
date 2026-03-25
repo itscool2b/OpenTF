@@ -6,6 +6,7 @@ skills. Uses local embeddings (all-MiniLM-L6-v2, 22MB) -- no external API needed
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -66,14 +67,16 @@ class MemoryStore:
     ) -> str:
         """Store a memory entry with its embedding. Returns the entry ID."""
         entry_id = uuid.uuid4().hex
-        embedding = self.embedder.encode(content).tolist()
+        embedding = await asyncio.to_thread(self.embedder.encode, content)
+        embedding = embedding.tolist()
         meta = {
             "stored_at": datetime.now(timezone.utc).isoformat(),
             **(metadata or {}),
         }
-        # ChromaDB requires string values in metadata
         meta = {k: str(v) for k, v in meta.items()}
-        self.collection.add(
+        collection = self.collection
+        await asyncio.to_thread(
+            collection.add,
             ids=[entry_id],
             embeddings=[embedding],
             documents=[content],
@@ -87,10 +90,13 @@ class MemoryStore:
         if self.collection.count() == 0:
             return []
 
-        embedding = self.embedder.encode(query).tolist()
-        results = self.collection.query(
+        embedding = await asyncio.to_thread(self.embedder.encode, query)
+        embedding = embedding.tolist()
+        n = min(top_k, self.collection.count())
+        results = await asyncio.to_thread(
+            self.collection.query,
             query_embeddings=[embedding],
-            n_results=min(top_k, self.collection.count()),
+            n_results=n,
         )
 
         entries = []
@@ -107,4 +113,4 @@ class MemoryStore:
 
     async def delete(self, entry_id: str) -> None:
         """Delete a memory entry by ID."""
-        self.collection.delete(ids=[entry_id])
+        await asyncio.to_thread(self.collection.delete, ids=[entry_id])

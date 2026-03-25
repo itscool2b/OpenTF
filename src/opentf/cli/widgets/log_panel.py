@@ -10,11 +10,11 @@ from opentf.cli.theme import COLORS
 
 # Style icons for different event types
 STYLE_ICONS = {
-    "tool":   "\u26a1",   # lightning
-    "result": "\u2713",   # checkmark
-    "error":  "\u2717",   # x mark
-    "done":   "\u2713",   # checkmark
-    "status": "\u2022",   # bullet
+    "tool":   ">>",
+    "result": "ok",
+    "error":  "!!",
+    "done":   "ok",
+    "status": "--",
 }
 
 
@@ -28,6 +28,7 @@ class LogPanel(RichLog):
         border-top: solid {COLORS['border']};
         padding: 0 1;
         scrollbar-size: 1 1;
+        display: none;
     }}
     """
 
@@ -40,15 +41,22 @@ class LogPanel(RichLog):
     def log_event(self, agent: str, action: str, style: str = "status") -> None:
         """Add a timestamped log entry with style-based icon."""
         now = datetime.now(timezone.utc).strftime("%H:%M:%S")
-        icon = STYLE_ICONS.get(style, "\u2022")
+        icon = STYLE_ICONS.get(style, "--")
+        D = COLORS['text_dim']
+        M = COLORS['text_muted']
 
-        agent_display = f"[{COLORS['text']}]{agent:<10}[/]"
+        agent_display = f"[{COLORS['text']}]{agent:<8}[/]"
 
         if style == "tool":
-            action_display = f"[{COLORS['accent2']}]{action}[/]"
+            # Split tool name from args for highlighting
+            if "(" in action:
+                tool_name, _, args = action.partition("(")
+                action_display = f"[{COLORS['accent2']}]{tool_name}[/][{D}]({args}[/]"
+            else:
+                action_display = f"[{COLORS['accent2']}]{action}[/]"
             icon_display = f"[{COLORS['accent2']}]{icon}[/]"
         elif style == "result":
-            action_display = f"[{COLORS['text_dim']}]{action}[/]"
+            action_display = f"[{D}]{action}[/]"
             icon_display = f"[{COLORS['success']}]{icon}[/]"
         elif style == "error":
             action_display = f"[{COLORS['error']}]{action}[/]"
@@ -57,10 +65,10 @@ class LogPanel(RichLog):
             action_display = f"[{COLORS['success']}]{action}[/]"
             icon_display = f"[{COLORS['success']}]{icon}[/]"
         else:
-            action_display = f"[{COLORS['text_dim']}]{action}[/]"
-            icon_display = f"[{COLORS['text_muted']}]{icon}[/]"
+            action_display = f"[{D}]{action}[/]"
+            icon_display = f"[{M}]{icon}[/]"
 
-        line = f"[{COLORS['text_muted']}]{now}[/]  {agent_display} {icon_display} {action_display}"
+        line = f"[{M}]{now}[/] {agent_display} {icon_display} {action_display}"
         self.write(line)
 
         self._entry_count += 1

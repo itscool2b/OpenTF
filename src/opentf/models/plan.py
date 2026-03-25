@@ -10,6 +10,8 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
+
+from opentf.cli.theme import COLORS
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -119,37 +121,79 @@ class Plan(BaseModel):
         )
 
     def format_markdown(self) -> str:
-        """Render plan as readable markdown."""
-        lines = [f"## Plan: {self.label}\n"]
+        """Render plan as readable Rich markup."""
+        D = COLORS['text_dim']
+        B = COLORS['border']
+        A = COLORS['accent']
+        lines = [
+            f"[bold {A}]{'─' * 40}[/]",
+            f"  [bold]Plan: {self.label}[/]",
+        ]
         if self.description:
-            lines.append(f"_{self.description}_\n")
+            lines.append(f"  [{D}]{self.description}[/]")
+        lines.append(f"[{B}]{'─' * 40}[/]")
 
         for phase in self.phases:
-            lines.append(f"\n### {phase.name}")
+            lines.append(f"\n  [bold]{phase.name}[/]")
             if phase.description:
-                lines.append(f"_{phase.description}_\n")
+                lines.append(f"  [{D}]{phase.description}[/]")
             for step in phase.steps:
                 icon = _status_icon(step.status)
                 deps = ""
                 if step.depends_on:
-                    deps = f" -- depends on {', '.join(step.depends_on)}"
+                    deps = f" [{D}]depends on {', '.join(step.depends_on)}[/]"
                 status_text = ""
                 if step.status == StepStatus.RUNNING:
-                    status_text = " -- running..."
+                    status_text = f" [{A}]running...[/]"
                 elif step.status == StepStatus.FAILED:
-                    status_text = f" -- failed: {step.error[:60]}"
+                    status_text = f" [{COLORS['error']}]failed: {step.error[:60]}[/]"
                 lines.append(
-                    f"  {icon} **{step.id}** {step.name} "
-                    f"(`{step.agent_type}`){deps}{status_text}"
+                    f"    {icon} [bold]{step.id}[/] {step.name} "
+                    f"[{D}]{step.agent_type}[/]{deps}{status_text}"
                 )
                 if step.success_criteria:
-                    lines.append(f"    _Success: {step.success_criteria}_")
+                    lines.append(f"         [{D}]{step.success_criteria}[/]")
 
         return "\n".join(lines)
 
     def all_steps(self) -> list[PlanStep]:
         """Flatten all steps across phases."""
         return [step for phase in self.phases for step in phase.steps]
+
+    def format_completion_summary(self) -> str:
+        """Rich completion summary with step recap and stats."""
+        steps = self.all_steps()
+        done = sum(1 for s in steps if s.status == StepStatus.DONE)
+        failed = sum(1 for s in steps if s.status == StepStatus.FAILED)
+        skipped = sum(1 for s in steps if s.status == StepStatus.SKIPPED)
+        total = len(steps)
+
+        S = COLORS['success']
+        E = COLORS['error']
+        D = COLORS['text_dim']
+        lines: list[str] = [""]
+
+        if self.status == "completed":
+            lines.append(f"[bold {S}]{'─' * 40}[/]")
+            lines.append(f"  [bold]PLAN COMPLETE[/]: {self.label}")
+            lines.append(f"  [{D}]{done}/{total} steps done[/]")
+            lines.append(f"[bold {S}]{'─' * 40}[/]")
+        else:
+            lines.append(f"[bold {E}]{'─' * 40}[/]")
+            lines.append(f"  [bold]PLAN FAILED[/]: {self.label}")
+            lines.append(f"  [{D}]{done} done / {failed} failed / {skipped} skipped[/]")
+            lines.append(f"[bold {E}]{'─' * 40}[/]")
+
+        lines.append("")
+        for phase in self.phases:
+            lines.append(f"  [bold]{phase.name}[/]")
+            for step in phase.steps:
+                icon = _status_icon(step.status)
+                error = f" [{E}]{step.error[:50]}[/]" if step.error else ""
+                lines.append(f"    {icon} {step.id} {step.name}{error}")
+            lines.append("")
+
+        return "\n".join(lines)
 
 
 def _status_icon(status: StepStatus) -> str:
