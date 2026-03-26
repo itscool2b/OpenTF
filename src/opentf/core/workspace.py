@@ -18,8 +18,8 @@ SKIP_DIRS = {
     ".pytest_cache", ".tox", "dist", "build", ".eggs", "*.egg-info",
     ".next", ".nuxt", "target", ".cargo", "vendor",
 }
-MAX_TREE_LINES = 40
-MAX_TREE_DEPTH = 3
+MAX_TREE_LINES = 100
+MAX_TREE_DEPTH = 5
 
 
 @dataclass
@@ -36,6 +36,7 @@ class WorkspaceInfo:
     file_count: int = 0
     tree: str = ""
     summary: str = ""
+    repo_map_text: str = ""
 
 
 def scan_workspace(root: Path | None = None) -> WorkspaceInfo:
@@ -69,6 +70,16 @@ def scan_workspace(root: Path | None = None) -> WorkspaceInfo:
 
     # Read summary from README
     info.summary = _read_summary(root, info)
+
+    # Build repo map with tree-sitter (optional, non-blocking)
+    try:
+        from opentf.core.repo_map import is_available, scan as scan_repo, format_repo_map
+        if is_available():
+            repo_index = scan_repo(root, max_files=300)
+            info.repo_map_text = format_repo_map(repo_index, max_tokens=1024)
+            log.info("Repo map: %d symbols indexed", repo_index.symbol_count)
+    except Exception as exc:
+        log.debug("Repo map scan failed (non-fatal): %s", exc)
 
     log.info(
         "Workspace scanned: %s (%s/%s, %d files)",

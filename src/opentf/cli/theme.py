@@ -121,11 +121,12 @@ def get_theme() -> str:
 
 def set_theme(name: str) -> bool:
     """Set the active theme. Returns True if valid, False if unknown."""
-    global _active_theme, COLORS
+    global _active_theme, COLORS, GRADIENT
     if name not in THEMES:
         return False
     _active_theme = name
     COLORS.update(THEMES[name])
+    GRADIENT.update(GRADIENT_STOPS[name])
     return True
 
 
@@ -162,6 +163,10 @@ SPINNERS = {
     "thinking":   ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"],
     "done":       ["✓"],
     "error":      ["✗"],
+    "pulse":      ["◐", "◓", "◑", "◒"],
+    "bounce":     ["⠁", "⠂", "⠄", "⠂"],
+    "blocks":     ["░", "▒", "▓", "█", "▓", "▒"],
+    "arrow":      ["▹", "▸", "▹", "▸"],
 }
 
 # Per-model pricing (per million tokens)
@@ -180,3 +185,160 @@ MODEL_PRICING = {
 
 SONNET_INPUT_PRICE = MODEL_PRICING["sonnet"]["input"]
 SONNET_OUTPUT_PRICE = MODEL_PRICING["sonnet"]["output"]
+
+
+# --- Box-drawing character sets ---
+
+BORDERS: dict[str, dict[str, str]] = {
+    "rounded": {
+        "h": "─", "v": "│",
+        "tl": "╭", "tr": "╮", "bl": "╰", "br": "╯",
+        "t": "┬", "b": "┴", "cross": "┼", "l": "├", "r": "┤",
+    },
+    "heavy": {
+        "h": "━", "v": "┃",
+        "tl": "┏", "tr": "┓", "bl": "┗", "br": "┛",
+        "t": "┳", "b": "┻", "cross": "╋", "l": "┣", "r": "┫",
+    },
+    "double": {
+        "h": "═", "v": "║",
+        "tl": "╔", "tr": "╗", "bl": "╚", "br": "╝",
+        "t": "╦", "b": "╩", "cross": "╬", "l": "╠", "r": "╣",
+    },
+}
+
+# Default border style per theme
+THEME_BORDER_STYLE: dict[str, str] = {
+    "gruvbox": "rounded",
+    "monokai": "rounded",
+    "solarized": "rounded",
+    "catppuccin": "rounded",
+    "tokyo-night": "rounded",
+    "minimal": "heavy",
+}
+
+
+# --- Semantic Unicode glyphs ---
+
+GLYPHS: dict[str, str] = {
+    "arrow_right":  "▸",
+    "arrow_down":   "▾",
+    "check":        "✓",
+    "cross":        "✗",
+    "bullet":       "●",
+    "bullet_empty": "○",
+    "diamond":      "◆",
+    "diamond_empty":"◇",
+    "dot":          "·",
+    "agent":        "▹",
+    "circle":       "◉",
+    "block_full":   "█",
+    "block_3_4":    "▓",
+    "block_half":   "▒",
+    "block_1_4":    "░",
+    "bar_h":        "━",
+    "ellipsis":     "…",
+    "sep":          "│",
+    "tree_branch":  "├",
+    "tree_last":    "└",
+    "tree_pipe":    "│",
+    "tree_arrow":   "▸",
+}
+
+# Smooth progress bar characters (in ascending fill order)
+PROGRESS_CHARS = ("░", "▒", "▓", "█")
+
+
+# --- Gradient stops per theme (accent -> accent2) ---
+
+GRADIENT_STOPS: dict[str, dict[str, str]] = {
+    "gruvbox":      {"start": "#fe8019", "end": "#fabd2f"},
+    "monokai":      {"start": "#f92672", "end": "#e6db74"},
+    "solarized":    {"start": "#cb4b16", "end": "#b58900"},
+    "catppuccin":   {"start": "#cba6f7", "end": "#f5c2e7"},
+    "tokyo-night":  {"start": "#ff9e64", "end": "#7aa2f7"},
+    "minimal":      {"start": "#ffffff", "end": "#aaaaaa"},
+}
+
+# Active gradient (mutable, updated by set_theme)
+GRADIENT: dict[str, str] = dict(GRADIENT_STOPS[_active_theme])
+
+
+# --- Helper functions ---
+
+def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
+    """Convert '#rrggbb' to (r, g, b) tuple."""
+    h = hex_color.lstrip("#")
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+
+def _rgb_to_hex(r: int, g: int, b: int) -> str:
+    """Convert (r, g, b) to '#rrggbb'."""
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def gradient_text(text: str, color_a: str | None = None, color_b: str | None = None) -> str:
+    """Return Rich markup where each character is colored along a gradient.
+
+    Uses the active theme's gradient stops if colors are not specified.
+    """
+    if not text:
+        return ""
+    a = color_a or GRADIENT["start"]
+    b = color_b or GRADIENT["end"]
+    r1, g1, b1 = _hex_to_rgb(a)
+    r2, g2, b2 = _hex_to_rgb(b)
+    n = max(len(text) - 1, 1)
+    parts: list[str] = []
+    for i, ch in enumerate(text):
+        t = i / n
+        r = int(r1 + (r2 - r1) * t)
+        g = int(g1 + (g2 - g1) * t)
+        bl = int(b1 + (b2 - b1) * t)
+        parts.append(f"[{_rgb_to_hex(r, g, bl)}]{ch}[/]")
+    return "".join(parts)
+
+
+def box_line(width: int, style: str = "rounded", part: str = "h") -> str:
+    """Return a horizontal line of box-drawing characters."""
+    chars = BORDERS.get(style, BORDERS["rounded"])
+    return chars[part] * width
+
+
+def get_border_style() -> str:
+    """Return the border style name for the active theme."""
+    return THEME_BORDER_STYLE.get(_active_theme, "rounded")
+
+
+def framed(text: str, width: int = 50, title: str = "",
+           border_style: str | None = None,
+           border_color: str | None = None) -> str:
+    """Wrap text in a box-drawing frame with optional title.
+
+    Returns Rich markup string.
+    """
+    style = border_style or get_border_style()
+    b = BORDERS.get(style, BORDERS["rounded"])
+    color = border_color or COLORS["border"]
+    inner = width - 2  # space inside the box
+
+    # Top line with optional title
+    if title:
+        title_display = f" {title} "
+        pad = inner - len(title_display)
+        top = f"[{color}]{b['tl']}{b['h']}{title_display}{b['h'] * max(pad - 1, 0)}{b['tr']}[/]"
+    else:
+        top = f"[{color}]{b['tl']}{b['h'] * inner}{b['tr']}[/]"
+
+    # Bottom line
+    bottom = f"[{color}]{b['bl']}{b['h'] * inner}{b['br']}[/]"
+
+    # Content lines
+    lines = text.split("\n")
+    body_lines: list[str] = []
+    for line in lines:
+        # Strip existing markup for length calc, but use raw line for display
+        display = line[:inner]
+        body_lines.append(f"[{color}]{b['v']}[/] {display}")
+
+    return "\n".join([top] + body_lines + [bottom])

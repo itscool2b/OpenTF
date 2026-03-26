@@ -16,7 +16,7 @@ from opentf.agents.specialists.main_agent import MainAgent
 from opentf.agents.specialists.planner import PlannerAgent
 from opentf.agents.specialists.skill_builder import SkillBuilderAgent
 from opentf.auth.credentials import CredentialManager
-from opentf.cli.theme import COLORS, MODEL_PRICING, SONNET_INPUT_PRICE, SONNET_OUTPUT_PRICE
+from opentf.cli.theme import COLORS, GLYPHS, MODEL_PRICING, SONNET_INPUT_PRICE, SONNET_OUTPUT_PRICE, gradient_text
 from opentf.cli.widgets.activity import ActivityBar
 from opentf.cli.widgets.command_palette import CommandPalette, CommandSelected
 from opentf.cli.widgets.log_panel import LogPanel
@@ -39,32 +39,49 @@ _D = COLORS['text_dim']
 _B = COLORS['border']
 _E = COLORS['error']
 _S = COLORS['success']
+_G = GLYPHS['arrow_right']
 
-HELP_TEXT = (
-    f"[bold {_A}]{'─' * 40}[/]\n"
-    f"  [bold]Commands[/]\n"
-    f"[{_B}]{'─' * 40}[/]\n"
-    f"  [{_A}]/plan[/]       Planning mode\n"
-    f"  [{_A}]/janitor[/]    Code quality scan\n"
-    f"  [{_A}]/model[/]      Switch model\n"
-    f"  [{_A}]/provider[/]   Switch LLM provider\n"
-    f"  [{_A}]/skill[/]      Manage skills\n"
-    f"  [{_A}]/theme[/]      Switch color theme\n"
-    f"  [{_A}]/copy[/]       Copy last response\n"
-    f"  [{_A}]/export[/]     Export conversation\n"
-    f"  [{_A}]/undo[/]       Undo last file change\n"
-    f"  [{_A}]/review[/]     Toggle file review\n"
-    f"  [{_A}]/compact[/]    Compress history\n"
-    f"  [{_A}]/resume[/]     Resume session\n"
-    f"  [{_A}]/save[/]       Save session\n"
-    f"  [{_A}]/sessions[/]   List sessions\n"
-    f"  [{_A}]/status[/]     Show status\n"
-    f"  [{_A}]/cost[/]       Token usage + cost\n"
-    f"  [{_A}]/clear[/]      Clear output\n"
-    f"  [{_A}]/exit[/]       Quit\n"
-    f"[{_B}]{'─' * 40}[/]\n"
-    f"  [{_D}]Esc[/] cancel   [{_D}]Ctrl+C[/] quit   [{_D}]Ctrl+L[/] clear"
-)
+
+def _build_help_text() -> str:
+    """Build help text dynamically using current theme."""
+    from opentf.cli.renderables import section_header, section_footer
+    cmds = [
+        ("/plan",       "Planning mode"),
+        ("/taskforce",  "Parallel agent swarm"),
+        ("/janitor",    "Code quality scan"),
+        ("/model",      "Switch model"),
+        ("/provider",   "Switch LLM provider"),
+        ("/skill",      "Manage skills"),
+        ("/theme",      "Switch color theme"),
+        ("/copy",       "Copy last response"),
+        ("/export",     "Export conversation"),
+        ("/undo",       "Undo last file change"),
+        ("/review",     "Toggle file review"),
+        ("/compact",    "Compress history"),
+        ("/resume",     "Resume session"),
+        ("/save",       "Save session"),
+        ("/sessions",   "List sessions"),
+        ("/status",     "Show status"),
+        ("/cost",       "Token usage + cost"),
+        ("/clear",      "Clear output"),
+        ("/exit",       "Quit"),
+    ]
+    lines = [section_header("Commands", 44)]
+    for cmd, desc in cmds:
+        lines.append(
+            f"  [{COLORS['accent']}]{GLYPHS['arrow_right']}[/] "
+            f"[bold {COLORS['text']}]{cmd:<14}[/] [{COLORS['text_dim']}]{desc}[/]"
+        )
+    lines.append(section_footer(44))
+    lines.append(
+        f"  [{COLORS['surface']} on {COLORS['text_dim']}] Esc [/] cancel   "
+        f"[{COLORS['surface']} on {COLORS['text_dim']}] Ctrl+C [/] quit   "
+        f"[{COLORS['surface']} on {COLORS['text_dim']}] Ctrl+L [/] clear"
+    )
+    return "\n".join(lines)
+
+
+HELP_TEXT = _build_help_text()
 
 from opentf.llm.registry import get_models, get_default_model, resolve_model, get_model_short_name
 
@@ -1550,15 +1567,15 @@ def main() -> None:
         exit_code = _asyncio.run(run_headless(args))
         raise SystemExit(exit_code)
 
-    # Full Textual TUI (opt-in)
-    if "--tui" in _sys.argv:
-        app = OpenTFApp()
-        app.run()
+    # REPL mode (opt-in fallback)
+    if "--repl" in _sys.argv:
+        from opentf.cli.repl import run_repl
+        _asyncio.run(run_repl())
         return
 
-    # Default: interactive REPL (like Claude Code / OpenCode)
-    from opentf.cli.repl import run_repl
-    _asyncio.run(run_repl())
+    # Default: full Textual TUI
+    app = OpenTFApp()
+    app.run()
 
 
 if __name__ == "__main__":

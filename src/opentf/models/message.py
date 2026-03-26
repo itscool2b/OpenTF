@@ -33,6 +33,8 @@ class MessageType(str, Enum):
     APPROVAL_GRANTED = "approval_granted"
     APPROVAL_DENIED = "approval_denied"
     APPROVAL_ALWAYS = "approval_always"
+    FILE_CHANGED = "file_changed"
+    FILE_CREATED = "file_created"
 
 
 class Message(BaseModel):

@@ -8,12 +8,86 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import json
 import logging
+import shlex
+import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Callable, Awaitable
 
 log = logging.getLogger(__name__)
+
+
+# --- Auto-formatter detection and execution ---
+
+_FORMATTER_COMMANDS: dict[str, str] = {}
+_FORMATTERS_DETECTED = False
+
+
+def _detect_formatters() -> dict[str, str]:
+    """Auto-detect available code formatters. Returns {ext: command} mapping."""
+    global _FORMATTERS_DETECTED, _FORMATTER_COMMANDS
+    if _FORMATTERS_DETECTED:
+        return _FORMATTER_COMMANDS
+
+    _FORMATTERS_DETECTED = True
+    formatters: dict[str, str] = {}
+
+    # Python: black or ruff
+    if shutil.which("black"):
+        formatters[".py"] = "black -q"
+    elif shutil.which("ruff"):
+        formatters[".py"] = "ruff format"
+
+    # JavaScript/TypeScript: prettier or biome
+    if shutil.which("prettier"):
+        formatters[".js"] = "prettier --write"
+        formatters[".jsx"] = "prettier --write"
+        formatters[".ts"] = "prettier --write"
+        formatters[".tsx"] = "prettier --write"
+    elif shutil.which("biome"):
+        formatters[".js"] = "biome format --write"
+        formatters[".ts"] = "biome format --write"
+
+    # Go
+    if shutil.which("gofmt"):
+        formatters[".go"] = "gofmt -w"
+
+    # Rust
+    if shutil.which("rustfmt"):
+        formatters[".rs"] = "rustfmt"
+
+    _FORMATTER_COMMANDS = formatters
+    if formatters:
+        log.info("Auto-detected formatters: %s", formatters)
+    return formatters
+
+
+async def _format_file(path: Path) -> str | None:
+    """Run detected formatter on a file. Returns None on success, error on failure."""
+    formatters = _detect_formatters()
+    ext = path.suffix.lower()
+    cmd_template = formatters.get(ext)
+    if not cmd_template:
+        return None
+
+    cmd = f"{cmd_template} {shlex.quote(str(path))}"
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cwd=str(ALLOWED_BASE_DIRS[0]),
+        )
+        _, stderr_out = await asyncio.wait_for(proc.communicate(), timeout=5)
+        if proc.returncode == 0:
+            formatter_name = cmd_template.split()[0]
+            return f"Auto-formatted with {formatter_name}."
+        else:
+            log.warning("Formatter failed on %s: %s", path, stderr_out.decode(errors="replace"))
+            return None
+    except (asyncio.TimeoutError, Exception):
+        return None
 
 
 class ApprovalRequired(Exception):
@@ -23,6 +97,82 @@ class ApprovalRequired(Exception):
         self.command = command
         self.diff_text = diff_text
         super().__init__(f"Approval required for: {command}")
+
+
+# --- File change event bus ---
+
+_file_bus: Any | None = None
+
+
+def set_file_bus(bus: Any) -> None:
+    """Set the bus for publishing file change events."""
+    global _file_bus
+    _file_bus = bus
+
+
+async def _publish_file_event(path: Path, action: str) -> None:
+    """Publish a file change event on the bus."""
+    if _file_bus is None:
+        return
+    try:
+        from opentf.models.message import Message, MessageType
+        msg_type = MessageType.FILE_CREATED if action == "create" else MessageType.FILE_CHANGED
+        await _file_bus.publish(Message(
+            type=msg_type,
+            source="file_tools",
+            payload={"path": str(path), "action": action},
+        ))
+    except Exception:
+        pass
+
+
+# --- LSP manager (shared with main_agent for post-edit diagnostics) ---
+
+_lsp_manager: Any | None = None
+
+
+def set_lsp_manager(manager: Any) -> None:
+    """Set the shared LSP manager for post-edit diagnostics."""
+    global _lsp_manager
+    _lsp_manager = manager
+
+
+def get_lsp_manager() -> Any | None:
+    """Get the shared LSP manager."""
+    return _lsp_manager
+
+
+async def _collect_lsp_diagnostics(path: Path) -> str:
+    """Collect LSP diagnostics after a file edit. Returns appended text or empty string."""
+    if _lsp_manager is None:
+        return ""
+    try:
+        result = await _lsp_manager.collect_diagnostics_after_edit(str(path))
+        if result:
+            return f"\n\n{result}"
+    except Exception:
+        pass
+    return ""
+
+
+# --- Read-before-edit tracking (inspired by Claude Code) ---
+
+_files_read_this_session: set[str] = set()
+
+
+def mark_file_read(path: str) -> None:
+    """Record that a file has been read this session."""
+    _files_read_this_session.add(str(Path(path).resolve()))
+
+
+def was_file_read(path: str) -> bool:
+    """Check if a file was read this session."""
+    return str(Path(path).resolve()) in _files_read_this_session
+
+
+def reset_read_tracker() -> None:
+    """Reset the read tracker (e.g., on new session)."""
+    _files_read_this_session.clear()
 
 
 # --- Review mode ---
@@ -69,7 +219,7 @@ def _backup_file(path: Path) -> None:
         _file_backups.append({"path": str(path), "existed": False})
         return
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    backup_path = BACKUP_DIR / f"{path.name}.{len(_file_backups)}"
+    backup_path = BACKUP_DIR / f"{path.name}.{int(time.time() * 1000)}"
     backup_path.write_text(path.read_text(errors="replace"))
     _file_backups.append({
         "path": str(path),
@@ -165,17 +315,22 @@ WRITE_FILE_TOOL = {
 EDIT_FILE_TOOL = {
     "name": "edit_file",
     "description": (
-        "Edit a file by replacing an exact text match. Use this instead of "
-        "write_file when modifying existing files. old_text must appear exactly once."
+        "Edit a file by replacing a text match. Supports exact and fuzzy matching. "
+        "Use this instead of write_file when modifying existing files. "
+        "Optionally provide line_range (e.g. '10-25') to replace by line numbers."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "File path to edit"},
-            "old_text": {"type": "string", "description": "Exact text to find (must match exactly once)"},
+            "old_text": {"type": "string", "description": "Text to find and replace (should be unique in the file)"},
             "new_text": {"type": "string", "description": "Replacement text"},
+            "line_range": {
+                "type": "string",
+                "description": "Line range to replace, e.g. '10-25'. Use when text matching fails.",
+            },
         },
-        "required": ["path", "old_text", "new_text"],
+        "required": ["path", "new_text"],
     },
 }
 
@@ -194,13 +349,18 @@ LIST_DIR_TOOL = {
 
 SEARCH_FILES_TOOL = {
     "name": "search_files",
-    "description": "Search for a text pattern in files using grep.",
+    "description": (
+        "Search for a regex pattern in files. Uses ripgrep if available (fast, "
+        ".gitignore-aware), falls back to grep. Supports file type filtering."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
-            "pattern": {"type": "string", "description": "Text pattern to search for"},
+            "pattern": {"type": "string", "description": "Regex pattern to search for"},
             "path": {"type": "string", "description": "Directory to search in"},
             "glob": {"type": "string", "description": "File pattern to filter (e.g. '*.py')"},
+            "file_type": {"type": "string", "description": "File type filter (e.g. 'py', 'js', 'ts')"},
+            "max_results": {"type": "integer", "description": "Max results to return (default 50)"},
         },
         "required": ["pattern"],
     },
@@ -218,7 +378,73 @@ RUN_COMMAND_TOOL = {
     },
 }
 
-ALL_TOOLS = [READ_FILE_TOOL, WRITE_FILE_TOOL, EDIT_FILE_TOOL, LIST_DIR_TOOL, SEARCH_FILES_TOOL, RUN_COMMAND_TOOL]
+# --- Dedicated grep and glob tools (like Claude Code / OpenCode) ---
+
+GREP_TOOL = {
+    "name": "grep",
+    "description": (
+        "Search file contents for a regex pattern. Uses ripgrep if available "
+        "(fast, .gitignore-aware). Returns matching lines with file paths and "
+        "line numbers."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "pattern": {"type": "string", "description": "Regex pattern to search for"},
+            "path": {"type": "string", "description": "Directory to search in (default: '.')"},
+            "glob": {"type": "string", "description": "File pattern filter (e.g. '*.py')"},
+            "file_type": {"type": "string", "description": "File type (e.g. 'py', 'js', 'ts')"},
+            "context_lines": {"type": "integer", "description": "Lines of context around matches (default: 0)"},
+            "max_results": {"type": "integer", "description": "Max results (default: 50)"},
+        },
+        "required": ["pattern"],
+    },
+}
+
+GLOB_TOOL = {
+    "name": "glob",
+    "description": (
+        "Find files by name/path pattern. Returns matching file paths sorted "
+        "by modification time (most recent first). Use this to discover files "
+        "in the project."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "pattern": {
+                "type": "string",
+                "description": "Glob pattern (e.g. '**/*.py', 'src/**/test_*.ts', '*.json')",
+            },
+            "path": {"type": "string", "description": "Root directory (default: '.')"},
+        },
+        "required": ["pattern"],
+    },
+}
+
+ASK_QUESTION_TOOL = {
+    "name": "ask_question",
+    "description": (
+        "Ask the user a question during task execution. Use when you need "
+        "clarification, confirmation, or a choice between options before proceeding."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "question": {"type": "string", "description": "The question to ask"},
+            "options": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional list of choices for the user",
+            },
+        },
+        "required": ["question"],
+    },
+}
+
+ALL_TOOLS = [
+    READ_FILE_TOOL, WRITE_FILE_TOOL, EDIT_FILE_TOOL, LIST_DIR_TOOL,
+    SEARCH_FILES_TOOL, GREP_TOOL, GLOB_TOOL, RUN_COMMAND_TOOL, ASK_QUESTION_TOOL,
+]
 
 # --- Validators ---
 
@@ -280,6 +506,7 @@ async def handle_read_file(input_data: dict[str, Any]) -> str:
         return f"Error: file too large ({path.stat().st_size} bytes, max {MAX_FILE_SIZE})"
 
     content = path.read_text(errors="replace")
+    mark_file_read(str(path))
     if len(content) > MAX_OUTPUT_LENGTH:
         content = content[:MAX_OUTPUT_LENGTH] + f"\n... (truncated, {len(content)} total chars)"
     return content
@@ -304,37 +531,33 @@ async def handle_write_file(input_data: dict[str, Any]) -> str:
             diff_text=diff_text or "(new file)",
         )
 
+    is_new = not path.exists()
     _backup_file(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
-    return f"Written {len(content)} chars to {path}"
+    msg = f"Written {len(content)} chars to {path}"
+    fmt_result = await _format_file(path)
+    if fmt_result:
+        msg += f" {fmt_result}"
+    msg += await _collect_lsp_diagnostics(path)
+    await _publish_file_event(path, "create" if is_new else "write")
+    return msg
 
 
 async def handle_edit_file(input_data: dict[str, Any]) -> str:
-    """Edit a file by replacing exact text. old_text must appear exactly once."""
-    path = validate_path(input_data["path"])
-    old_text = input_data["old_text"]
-    new_text = input_data["new_text"]
+    """Edit a file using multi-strategy matching (exact, normalized, fuzzy, line-range)."""
+    from opentf.tools.edit_engine import EditEngine
 
-    if not old_text:
-        return "Error: old_text cannot be empty"
-    if old_text == new_text:
+    path = validate_path(input_data["path"])
+    old_text = input_data.get("old_text", "")
+    new_text = input_data["new_text"]
+    line_range = input_data.get("line_range")
+
+    if not old_text and not line_range:
+        return "Error: provide either old_text or line_range"
+    if old_text and old_text == new_text:
         return "No changes needed -- old_text and new_text are identical"
 
-    if _review_mode and not input_data.get("_approved"):
-        if path.exists() and path.is_file():
-            current = path.read_text(errors="replace")
-            proposed = current.replace(old_text, new_text, 1)
-            diff_lines = list(difflib.unified_diff(
-                current.splitlines(keepends=True), proposed.splitlines(keepends=True),
-                fromfile=str(path), tofile=str(path), lineterm="",
-            ))
-            diff_text = "\n".join(diff_lines[:80])
-            if len(diff_lines) > 80:
-                diff_text += f"\n... ({len(diff_lines) - 80} more lines)"
-        else:
-            diff_text = f"(file not found: {path})"
-        raise ApprovalRequired(f"edit {path}", diff_text=diff_text)
     if not path.exists():
         return f"Error: file not found: {path}"
     if not path.is_file():
@@ -345,26 +568,45 @@ async def handle_edit_file(input_data: dict[str, Any]) -> str:
         return f"Error: file too large ({path.stat().st_size} bytes, max {MAX_FILE_SIZE})"
 
     content = path.read_text(errors="replace")
-    count = content.count(old_text)
+    engine = EditEngine()
 
-    if count == 0:
-        return (
-            f"Error: old_text not found in {path}. "
-            "Make sure the text matches exactly, including whitespace and indentation."
-        )
-    if count > 1:
-        return (
-            f"Error: old_text appears {count} times in {path}. "
-            "Provide a longer or more specific old_text that matches exactly once."
-        )
+    new_content, match, msg = engine.apply_edit(
+        content, old_text, new_text, line_range=line_range,
+    )
+
+    if match is None:
+        # msg contains the error message from the engine
+        return f"{msg}"
+
+    # Review mode: show diff for approval
+    if _review_mode and not input_data.get("_approved"):
+        diff_lines = list(difflib.unified_diff(
+            content.splitlines(keepends=True), new_content.splitlines(keepends=True),
+            fromfile=str(path), tofile=str(path), lineterm="",
+        ))
+        diff_text = "\n".join(diff_lines[:80])
+        if len(diff_lines) > 80:
+            diff_text += f"\n... ({len(diff_lines) - 80} more lines)"
+        raise ApprovalRequired(f"edit {path}", diff_text=diff_text)
+
+    # Read-before-edit warning
+    read_warning = ""
+    if not was_file_read(str(path)):
+        read_warning = "\nNote: this file was not explicitly read before editing. Consider reading files first to avoid stale content."
 
     _backup_file(path)
-    new_content = content.replace(old_text, new_text, 1)
     path.write_text(new_content)
+    mark_file_read(str(path))  # Mark as read since we just read it for the edit
 
-    diff = len(new_text) - len(old_text)
-    sign = "+" if diff >= 0 else ""
-    return f"Edited {path} ({sign}{diff} chars, {len(new_content)} total)"
+    result_msg = f"Edited {path} ({msg}, {len(new_content)} total chars)"
+    fmt_result = await _format_file(path)
+    if fmt_result:
+        result_msg += f" {fmt_result}"
+    result_msg += await _collect_lsp_diagnostics(path)
+    await _publish_file_event(path, "edit")
+    if read_warning:
+        result_msg += read_warning
+    return result_msg
 
 
 async def handle_list_directory(input_data: dict[str, Any]) -> str:
@@ -385,22 +627,48 @@ async def handle_list_directory(input_data: dict[str, Any]) -> str:
     return "\n".join(lines) if lines else "(empty directory)"
 
 
+def _detect_rg() -> str | None:
+    """Detect ripgrep binary. Returns path or None."""
+    import shutil
+    return shutil.which("rg")
+
+
+_RG_PATH: str | None = _detect_rg()
+
+
 async def handle_search_files(input_data: dict[str, Any]) -> str:
-    """Search files using grep with sandboxing."""
+    """Search files using ripgrep (preferred) or grep with sandboxing."""
     pattern = input_data["pattern"]
     search_path = input_data.get("path", ".")
     file_glob = input_data.get("glob", "")
+    file_type = input_data.get("file_type", "")
+    max_results = input_data.get("max_results", 50)
 
     path = validate_path(search_path)
 
-    cmd = ["grep", "-rn", "--include", file_glob or "*", pattern, str(path)]
+    if _RG_PATH:
+        # Ripgrep: fast, .gitignore-aware by default
+        cmd = [_RG_PATH, "--line-number", "--no-heading", "--color", "never",
+               "--max-count", str(max_results)]
+        if file_glob:
+            cmd.extend(["--glob", file_glob])
+        if file_type:
+            cmd.extend(["--type", file_type])
+        cmd.extend([pattern, str(path)])
+    else:
+        # Fallback to grep
+        cmd = ["grep", "-rn"]
+        if file_glob:
+            cmd.extend(["--include", file_glob])
+        cmd.extend([pattern, str(path)])
+
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
         result = stdout.decode(errors="replace")
         if len(result) > MAX_OUTPUT_LENGTH:
             result = result[:MAX_OUTPUT_LENGTH] + "\n... (truncated)"
@@ -409,6 +677,80 @@ async def handle_search_files(input_data: dict[str, Any]) -> str:
         return "Error: search timed out"
     except Exception as exc:
         return f"Error: {exc}"
+
+
+async def handle_grep(input_data: dict[str, Any]) -> str:
+    """Dedicated content search tool using ripgrep/grep."""
+    # Delegate to the existing search_files handler with same params
+    return await handle_search_files(input_data)
+
+
+async def handle_glob(input_data: dict[str, Any]) -> str:
+    """Find files by name/path pattern, sorted by modification time."""
+    pattern = input_data["pattern"]
+    search_path = input_data.get("path", ".")
+
+    path = validate_path(search_path)
+
+    # Use ripgrep --files for speed if available, otherwise Path.glob
+    if _RG_PATH:
+        cmd = [_RG_PATH, "--files", "--glob", pattern, str(path)]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            files = stdout.decode(errors="replace").strip().split("\n")
+            files = [f for f in files if f.strip()]
+        except Exception:
+            files = []
+    else:
+        files = []
+
+    # Fallback to Path.glob if rg didn't find anything or isn't available
+    if not files:
+        try:
+            matches = list(path.glob(pattern))
+            files = [str(m.relative_to(path)) for m in matches if m.is_file()]
+        except Exception:
+            files = []
+
+    if not files:
+        return f"No files matching '{pattern}'"
+
+    # Sort by modification time (most recent first)
+    def _mtime(f: str) -> float:
+        try:
+            return (path / f).stat().st_mtime
+        except Exception:
+            return 0.0
+
+    files.sort(key=_mtime, reverse=True)
+
+    # Limit output
+    total = len(files)
+    files = files[:100]
+    result = "\n".join(files)
+    if total > 100:
+        result += f"\n... ({total - 100} more files)"
+    return result
+
+
+async def handle_ask_question(input_data: dict[str, Any]) -> str:
+    """Ask the user a question. Blocks until user responds.
+
+    Uses ApprovalRequired pattern -- the UI handles displaying the question
+    and collecting the response.
+    """
+    question = input_data["question"]
+    options = input_data.get("options", [])
+
+    prompt = question
+    if options:
+        prompt += "\n\nOptions:\n" + "\n".join(f"  {i+1}. {opt}" for i, opt in enumerate(options))
+
+    # Use ApprovalRequired to pause and ask the user
+    raise ApprovalRequired(f"Question: {prompt}")
 
 
 def _is_dangerous(command: str) -> bool:
@@ -476,5 +818,8 @@ def all_handlers(command_allowlist: list[str] | None = None) -> dict[str, Callab
         "edit_file": handle_edit_file,
         "list_directory": handle_list_directory,
         "search_files": handle_search_files,
+        "grep": handle_grep,
+        "glob": handle_glob,
+        "ask_question": handle_ask_question,
         "run_command": make_command_handler(command_allowlist or DEFAULT_SAFE_COMMANDS),
     }

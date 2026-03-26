@@ -1,4 +1,4 @@
-"""Input prompt with history and mode-aware styling."""
+"""Input prompt with history, mode-aware styling, and mode indicator pip."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from textual import events
 from textual.message import Message
 from textual.widgets import Input
 
-from opentf.cli.theme import COLORS
+from opentf.cli.theme import COLORS, GLYPHS
 
 
 class SlashToggle(Message):
@@ -18,7 +18,7 @@ class SlashToggle(Message):
 
 
 class PromptInput(Input):
-    """Single-line input with command history and mode badges."""
+    """Single-line input with command history, mode badges, and indicator pip."""
 
     DEFAULT_CSS = f"""
     PromptInput {{
@@ -40,6 +40,7 @@ class PromptInput(Input):
         super().__init__(placeholder="Type a message, or / for commands", **kwargs)
         self._history: list[str] = []
         self._history_index = -1
+        self._mode = "normal"
 
     def add_to_history(self, text: str) -> None:
         if text and (not self._history or self._history[-1] != text):
@@ -65,13 +66,22 @@ class PromptInput(Input):
             event.prevent_default()
 
     def set_mode(self, mode: str) -> None:
-        """Switch prompt placeholder for different modes."""
-        if mode == "plan":
-            self.placeholder = "Describe your goal, or /confirm /cancel"
-        elif mode == "janitor":
-            self.placeholder = "accept N, reject N, /done, or /cancel"
-        else:
-            self.placeholder = "Type a message, or / for commands"
+        """Switch prompt placeholder and pip color for different modes."""
+        self._mode = mode
+        mode_config = {
+            "plan": {
+                "placeholder": "Describe your goal, or /confirm /cancel",
+                "pip_color": COLORS["warning"],
+            },
+            "janitor": {
+                "placeholder": "accept N, reject N, /done, or /cancel",
+                "pip_color": COLORS["accent2"],
+            },
+        }
+        cfg = mode_config.get(mode, {})
+        self.placeholder = cfg.get(
+            "placeholder", "Type a message, or / for commands"
+        )
 
     def watch_value(self, value: str) -> None:
         """Show/hide palette reactively based on whether input starts with /."""

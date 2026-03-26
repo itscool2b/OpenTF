@@ -5,12 +5,26 @@
 - Python 3.12 or higher
 - An [Anthropic API key](https://console.anthropic.com/)
 
-## Quick Install (Recommended)
+## pip (recommended)
+
+```bash
+pip install opentf
+```
+
+## pipx (isolated environment)
+
+```bash
+pipx install opentf
+```
+
+pipx creates an isolated virtual environment automatically. Recommended if you don't want to pollute your system Python.
+
+## Install script
 
 The install script handles everything -- Python detection, virtual environment, PATH setup:
 
 ```bash
-curl -fsSL https://opentf.dev/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/itscool2b/opentf/main/install.sh | bash
 ```
 
 This will:
@@ -29,15 +43,14 @@ source ~/.zshrc     # zsh
 source ~/.config/fish/config.fish  # fish
 ```
 
-Then run:
+### Script flags
 
-```bash
-opentf
-```
+| Flag | Description |
+|------|-------------|
+| `--upgrade`, `-u` | Upgrade existing installation |
+| `--from-source` | Install from current directory (for development) |
 
-## Install from Source
-
-Clone the repo and install in development mode:
+## Install from source
 
 ```bash
 git clone https://github.com/itscool2b/opentf.git
@@ -47,73 +60,23 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-Run directly:
+## First Run
 
 ```bash
 opentf
 ```
 
-## Install via pip
+On first run, you'll be prompted for your Anthropic API key. You can also set it via environment variable:
 
 ```bash
-pip install opentf
-```
-
-## Updating
-
-### curl install
-
-Re-run the install script. It will upgrade the existing installation in place:
-
-```bash
-curl -fsSL https://opentf.dev/install.sh | bash
-```
-
-The script detects the existing `~/.opentf/` directory and upgrades the package without recreating the virtual environment.
-
-### Source install
-
-Pull the latest changes and reinstall:
-
-```bash
-cd opentf
-git pull
-source .venv/bin/activate
-pip install -e ".[dev]"
-```
-
-### pip install
-
-```bash
-pip install --upgrade opentf
-```
-
-## API Key Setup
-
-OpenTF needs an Anthropic API key. There are two ways to provide it:
-
-### Option 1: Environment variable (recommended for CI/scripts)
-
-```bash
+# bash / zsh
 export ANTHROPIC_API_KEY="sk-ant-..."
-opentf
-```
-
-Add it to your shell config to persist:
-
-```bash
-# bash/zsh
-echo 'export ANTHROPIC_API_KEY="sk-ant-..."' >> ~/.bashrc
 
 # fish
 set -Ux ANTHROPIC_API_KEY "sk-ant-..."
 ```
 
-### Option 2: Built-in credential store
-
-On first run, OpenTF prompts for your API key and stores it at `~/.config/opentf/credentials.json` with `0600` permissions (owner read/write only).
-
-You can also manage it with commands inside OpenTF:
+The key is stored securely at `~/.config/opentf/credentials.json` with `0600` permissions.
 
 | Command | Description |
 |---------|-------------|
@@ -121,11 +84,41 @@ You can also manage it with commands inside OpenTF:
 | `/logout` | Remove stored API key |
 | `/status` | Check current auth status |
 
-**Resolution order:** Environment variable takes priority over stored credentials.
+## Updating
+
+### pip / pipx
+
+```bash
+pip install --upgrade opentf
+# or
+pipx upgrade opentf
+```
+
+### Install script
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/itscool2b/opentf/main/install.sh | bash -s -- --upgrade
+```
+
+### Source install
+
+```bash
+cd opentf
+git pull
+pip install -e ".[dev]"
+```
 
 ## Uninstalling
 
-### curl install
+### pip / pipx
+
+```bash
+pip uninstall opentf
+# or
+pipx uninstall opentf
+```
+
+### Install script
 
 ```bash
 rm -rf ~/.opentf
@@ -133,23 +126,7 @@ rm ~/.local/bin/opentf
 rm -rf ~/.config/opentf
 ```
 
-Then remove the PATH line from your shell config (`~/.bashrc`, `~/.zshrc`, or `~/.config/fish/config.fish`).
-
-### Source install
-
-```bash
-source .venv/bin/activate
-pip uninstall opentf
-deactivate
-rm -rf .venv
-```
-
-### pip install
-
-```bash
-pip uninstall opentf
-rm -rf ~/.config/opentf
-```
+Remove the PATH line from your shell config if desired.
 
 ## Troubleshooting
 
@@ -161,10 +138,10 @@ Make sure `~/.local/bin` is in your PATH:
 echo $PATH | tr ':' '\n' | grep local
 ```
 
-If it's missing, add it:
+If missing:
 
 ```bash
-# bash/zsh
+# bash / zsh
 export PATH="$HOME/.local/bin:$PATH"
 
 # fish
@@ -179,11 +156,7 @@ OpenTF requires Python 3.12+. Check your version:
 python3 --version
 ```
 
-Install a newer version via your package manager or [python.org](https://python.org).
-
-### Permission denied on credentials file
-
-The credentials file must be owned by you with `0600` permissions:
+### Permission denied on credentials
 
 ```bash
 chmod 600 ~/.config/opentf/credentials.json
@@ -191,9 +164,7 @@ chmod 600 ~/.config/opentf/credentials.json
 
 ### ChromaDB or sentence-transformers issues
 
-These are optional dependencies used for the memory system. If they fail to install (common on some ARM systems), OpenTF still works -- memory features will be unavailable.
-
-To install them separately:
+These are used for the memory system. If they fail to install (common on some ARM systems), OpenTF still works -- memory features will be unavailable. Install them separately:
 
 ```bash
 pip install chromadb sentence-transformers

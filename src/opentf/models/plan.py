@@ -11,7 +11,11 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum
 
-from opentf.cli.theme import COLORS
+from opentf.cli.theme import COLORS, GLYPHS, gradient_text
+from opentf.cli.renderables import (
+    animated_progress_bar, plan_step_icon, section_header, section_footer,
+    status_badge, tree_connector,
+)
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -121,39 +125,49 @@ class Plan(BaseModel):
         )
 
     def format_markdown(self) -> str:
-        """Render plan as readable Rich markup."""
+        """Render plan as readable Rich markup with styled icons and tree connectors."""
         D = COLORS['text_dim']
-        B = COLORS['border']
         A = COLORS['accent']
         lines = [
-            f"[bold {A}]{'─' * 40}[/]",
-            f"  [bold]Plan: {self.label}[/]",
+            section_header(f"Plan: {self.label}", 50),
         ]
         if self.description:
             lines.append(f"  [{D}]{self.description}[/]")
-        lines.append(f"[{B}]{'─' * 40}[/]")
+        lines.append("")
 
         for phase in self.phases:
-            lines.append(f"\n  [bold]{phase.name}[/]")
+            lines.append(f"  {gradient_text(phase.name)}")
             if phase.description:
                 lines.append(f"  [{D}]{phase.description}[/]")
-            for step in phase.steps:
-                icon = _status_icon(step.status)
+            for i, step in enumerate(phase.steps):
+                icon = plan_step_icon(step.status.value)
+
+                # Dependencies as tree connectors
                 deps = ""
                 if step.depends_on:
-                    deps = f" [{D}]depends on {', '.join(step.depends_on)}[/]"
+                    dep_list = ", ".join(step.depends_on)
+                    is_last = i == len(phase.steps) - 1
+                    connector = tree_connector(is_last)
+                    deps = f" {connector} [{D}]{dep_list}[/]"
+
+                # Agent type badge
+                agent_badge = status_badge(step.agent_type, COLORS['text_muted'], bold=False)
+
+                # Status annotation
                 status_text = ""
                 if step.status == StepStatus.RUNNING:
                     status_text = f" [{A}]running...[/]"
                 elif step.status == StepStatus.FAILED:
-                    status_text = f" [{COLORS['error']}]failed: {step.error[:60]}[/]"
+                    status_text = f" [{COLORS['error']}]failed: {step.error[:50]}[/]"
+
                 lines.append(
                     f"    {icon} [bold]{step.id}[/] {step.name} "
-                    f"[{D}]{step.agent_type}[/]{deps}{status_text}"
+                    f"{agent_badge}{deps}{status_text}"
                 )
                 if step.success_criteria:
                     lines.append(f"         [{D}]{step.success_criteria}[/]")
 
+        lines.append(section_footer(50))
         return "\n".join(lines)
 
     def all_steps(self) -> list[PlanStep]:
@@ -161,7 +175,7 @@ class Plan(BaseModel):
         return [step for phase in self.phases for step in phase.steps]
 
     def format_completion_summary(self) -> str:
-        """Rich completion summary with step recap and stats."""
+        """Rich completion summary with progress bar and step recap."""
         steps = self.all_steps()
         done = sum(1 for s in steps if s.status == StepStatus.DONE)
         failed = sum(1 for s in steps if s.status == StepStatus.FAILED)
@@ -174,37 +188,41 @@ class Plan(BaseModel):
         lines: list[str] = [""]
 
         if self.status == "completed":
-            lines.append(f"[bold {S}]{'─' * 40}[/]")
-            lines.append(f"  [bold]PLAN COMPLETE[/]: {self.label}")
-            lines.append(f"  [{D}]{done}/{total} steps done[/]")
-            lines.append(f"[bold {S}]{'─' * 40}[/]")
+            color = S
+            title = "Plan Complete"
         else:
-            lines.append(f"[bold {E}]{'─' * 40}[/]")
-            lines.append(f"  [bold]PLAN FAILED[/]: {self.label}")
-            lines.append(f"  [{D}]{done} done / {failed} failed / {skipped} skipped[/]")
-            lines.append(f"[bold {E}]{'─' * 40}[/]")
+            color = E
+            title = "Plan Failed"
 
+        lines.append(section_header(title, 50, color=color))
+
+        # Progress bar
+        bar = animated_progress_bar(done, total, 30, frame=0)
+        lines.append(f"  {bar}")
+
+        # Stats line
+        stats_parts: list[str] = [f"[{S}]{done} done[/]"]
+        if failed:
+            stats_parts.append(f"[{E}]{failed} failed[/]")
+        if skipped:
+            stats_parts.append(f"[{D}]{skipped} skipped[/]")
+        stats_parts.append(f"[{D}]{total} total[/]")
+        lines.append(f"  {' {0} '.format(GLYPHS['sep']).join(stats_parts)}")
         lines.append("")
+
+        # Step recap
         for phase in self.phases:
             lines.append(f"  [bold]{phase.name}[/]")
             for step in phase.steps:
-                icon = _status_icon(step.status)
+                icon = plan_step_icon(step.status.value)
                 error = f" [{E}]{step.error[:50]}[/]" if step.error else ""
                 lines.append(f"    {icon} {step.id} {step.name}{error}")
             lines.append("")
 
+        lines.append(section_footer(50, color=color))
         return "\n".join(lines)
 
 
 def _status_icon(status: StepStatus) -> str:
-    if status == StepStatus.PENDING:
-        return "[ ]"
-    elif status == StepStatus.RUNNING:
-        return "[>]"
-    elif status == StepStatus.DONE:
-        return "[x]"
-    elif status == StepStatus.FAILED:
-        return "[!]"
-    elif status == StepStatus.SKIPPED:
-        return "[-]"
-    return "[ ]"
+    """Legacy icon function -- delegates to plan_step_icon."""
+    return plan_step_icon(status.value)

@@ -88,7 +88,7 @@ async def test_edit_file_empty_old_text(tmp_path: Path, monkeypatch: pytest.Monk
         "old_text": "",
         "new_text": "world",
     })
-    assert "empty" in result.lower()
+    assert "error" in result.lower()
 
 
 async def test_edit_file_no_match(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

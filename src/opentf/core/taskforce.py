@@ -222,7 +222,7 @@ class TaskForce:
             llm=self.llm,
             tools=list(FILE_TOOLS),
             handlers=file_handlers(CODE_SAFE_COMMANDS),
-            max_iterations=15,
+            max_iterations=25,
             bus=self.bus,
             source=spec.name,
         )
@@ -255,7 +255,7 @@ class TaskForce:
             llm=self.llm,
             tools=list(FILE_TOOLS),
             handlers=file_handlers(CODE_SAFE_COMMANDS),
-            max_iterations=10,
+            max_iterations=15,
             bus=self.bus,
             source="validator",
         )

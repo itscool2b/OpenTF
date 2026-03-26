@@ -8,7 +8,7 @@ from textual.message import Message
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
-from opentf.cli.theme import COLORS, MODEL_COLORS
+from opentf.cli.theme import COLORS, GLYPHS, MODEL_COLORS, gradient_text
 from opentf.llm.registry import MODEL_REGISTRY
 
 # Model descriptions for display
@@ -71,7 +71,7 @@ class ModelSelector(Vertical):
         height: auto;
         max-height: 16;
         background: {COLORS['bg']};
-        border: solid {COLORS['border']};
+        border: round {COLORS['border']};
         padding: 1 1;
     }}
     ModelSelector #model-title {{
@@ -109,19 +109,30 @@ class ModelSelector(Vertical):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="model-box"):
-            yield Static("Switch Model", id="model-title")
+            title = gradient_text("Switch Model")
+            yield Static(title, id="model-title")
             options = self._build_options(self._current_model)
             yield OptionList(*options, id="model-options")
-            yield Static("[up/down] navigate  [enter] select  [esc] close", id="model-hint")
+            yield Static(
+                f"[{COLORS['text_muted']}]up/down[/] navigate  "
+                f"[{COLORS['text_muted']}]enter[/] select  "
+                f"[{COLORS['text_muted']}]esc[/] close",
+                id="model-hint",
+            )
 
     def _build_options(self, current_model: str) -> list[Option]:
-        """Build option list from current provider's models."""
+        """Build option list with colored pips and check marks."""
         models = _get_models_for_provider(self._provider)
-        options = []
+        options: list[Option] = []
         for short, model_id, desc in models:
             color = MODEL_COLORS.get(short, COLORS['text'])
-            current = f" [{COLORS['success']}][active][/]" if model_id == current_model else ""
-            label = f"  [{color}]{short:<12}[/] [{COLORS['text_dim']}]{desc}[/]{current}"
+            pip = GLYPHS["bullet"]
+            active = f" [{COLORS['success']}]{GLYPHS['check']}[/]" if model_id == current_model else ""
+            label = (
+                f"  [{color}]{pip}[/] "
+                f"[bold {color}]{short:<12}[/] "
+                f"[{COLORS['text_dim']}]{desc}[/]{active}"
+            )
             options.append(Option(label, id=model_id))
         return options
 
@@ -133,7 +144,9 @@ class ModelSelector(Vertical):
         self.display = True
         try:
             title = self.query_one("#model-title", Static)
-            title.update(f"Switch Model [{COLORS['text_dim']}]({self._provider})[/]")
+            title.update(
+                f"{gradient_text('Switch Model')} [{COLORS['text_dim']}]({self._provider})[/]"
+            )
             opt_list = self.query_one("#model-options", OptionList)
             opt_list.clear_options()
             for option in self._build_options(current_model):

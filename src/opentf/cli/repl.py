@@ -1,11 +1,11 @@
-"""Interactive REPL mode -- the default CLI experience.
+"""Interactive REPL mode -- fallback CLI experience.
 
 Prints inline in the terminal like Claude Code or OpenCode.
 Text is fully selectable and copyable. No Textual TUI.
 
 Usage:
-    opentf              # launches REPL
-    opentf --tui        # launches full Textual TUI instead
+    opentf              # launches full Textual TUI (default)
+    opentf --repl       # launches this REPL instead
 """
 
 from __future__ import annotations
@@ -26,7 +26,11 @@ from rich.markdown import Markdown
 from rich.theme import Theme
 
 from opentf.cli.theme import (
-    COLORS, MODEL_PRICING, available_themes, get_theme, set_theme,
+    COLORS, GLYPHS, MODEL_PRICING, SPINNERS, available_themes,
+    get_theme, gradient_text, set_theme,
+)
+from opentf.cli.renderables import (
+    banner_art, cost_table, section_header, section_footer,
 )
 from opentf.core.cost_tracker import CostTracker
 from opentf.core.engine import Engine
@@ -38,24 +42,31 @@ from opentf.models.message import Message, MessageType
 
 console = Console(highlight=False)
 
-# Styles derived from active theme
+
 def _styled(text: str, color: str) -> str:
     return f"[{color}]{text}[/]"
 
 
-def _print_banner(provider: str, model: str) -> None:
+async def _animated_banner(provider: str, model: str) -> None:
+    """Print the gradient banner with a line-by-line animation effect."""
+    art = banner_art()
+    for line in art.split("\n"):
+        console.print(line)
+        await asyncio.sleep(0.03)
+
     short = get_model_short_name(model)
+    sep = f" [{COLORS['text_muted']}]{GLYPHS['sep']}[/] "
     console.print(
-        f"\n[bold {COLORS['accent']}]OpenTF[/] v0.1.0 "
-        f"[{COLORS['text_dim']}]|[/] [{COLORS['text_dim']}]{short}[/] "
-        f"[{COLORS['text_dim']}]|[/] [{COLORS['text_dim']}]{provider}[/]\n"
-        f"[{COLORS['text_muted']}]Type a message or / for commands. Ctrl+D to exit.[/]\n"
+        f"  [{COLORS['text_dim']}]{short}[/]{sep}"
+        f"[{COLORS['text_dim']}]{provider}[/]{sep}"
+        f"[{COLORS['text_muted']}]v0.1.0[/]\n"
+        f"  [{COLORS['text_muted']}]Type a message or / for commands. Ctrl+D to exit.[/]\n"
     )
 
 
 def _print_help() -> None:
     c = COLORS
-    console.print(f"\n[bold {c['accent']}]Commands[/]")
+    console.print(f"\n{section_header('Commands', 44)}")
     cmds = [
         ("/model <name>",   "Switch model"),
         ("/provider <name>","Switch provider (anthropic/openai/ollama)"),
@@ -70,8 +81,11 @@ def _print_help() -> None:
         ("/exit",           "Quit"),
     ]
     for cmd, desc in cmds:
-        console.print(f"  [{c['accent']}]{cmd:<22}[/] [{c['text_dim']}]{desc}[/]")
-    console.print()
+        console.print(
+            f"  [{c['accent']}]{GLYPHS['arrow_right']}[/] "
+            f"[{c['accent']}]{cmd:<22}[/] [{c['text_dim']}]{desc}[/]"
+        )
+    console.print(f"{section_footer(44)}\n")
 
 
 def _copy_to_clipboard(text: str) -> bool:
@@ -117,8 +131,8 @@ async def run_repl() -> None:
         if not key:
             env_var = "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENAI_API_KEY"
             console.print(
-                f"\n[{COLORS['warning']}]No API key found for {provider}.[/]\n"
-                f"Set [{COLORS['accent']}]{env_var}[/] or run with [{COLORS['accent']}]--tui[/] for interactive setup.\n"
+                f"\n[{COLORS['warning']}]{GLYPHS['cross']} No API key found for {provider}.[/]\n"
+                f"Set [{COLORS['accent']}]{env_var}[/] or run [{COLORS['accent']}]opentf[/] (TUI) for interactive setup.\n"
             )
             # Prompt inline
             try:
@@ -156,15 +170,17 @@ async def run_repl() -> None:
     readline.set_completer_delims("")
     readline.parse_and_bind("tab: complete")
 
-    _print_banner(provider, model)
+    await _animated_banner(provider, model)
 
     try:
         while True:
             cancelled = False
 
-            # Prompt
+            # Prompt with styled arrow
             try:
-                user_input = console.input(f"[bold {COLORS['accent']}]>[/] ").strip()
+                user_input = console.input(
+                    f"[bold {COLORS['accent']}]{GLYPHS['arrow_right']}[/] "
+                ).strip()
             except (EOFError, KeyboardInterrupt):
                 console.print(f"\n[{COLORS['text_muted']}]Goodbye.[/]")
                 break
@@ -196,24 +212,26 @@ async def run_repl() -> None:
                     if not arg:
                         models = get_models(engine.llm.provider_name)
                         current = get_model_short_name(engine.llm.model)
-                        console.print(f"[{COLORS['text_dim']}]Current: [bold]{current}[/][/]")
+                        console.print(f"\n{section_header('Models', 40)}")
+                        console.print(f"  [{COLORS['text_dim']}]Current: [bold]{current}[/][/]")
                         for short, mid in models.items():
-                            marker = " [active]" if mid == engine.llm.model else ""
-                            console.print(f"  [{COLORS['accent']}]{short}[/]{marker}")
+                            marker = f" [{COLORS['success']}]{GLYPHS['check']}[/]" if mid == engine.llm.model else ""
+                            console.print(f"  [{COLORS['accent']}]{GLYPHS['bullet']}[/] [{COLORS['accent']}]{short}[/]{marker}")
+                        console.print(f"{section_footer(40)}\n")
                     else:
                         mid = resolve_model(engine.llm.provider_name, arg)
                         if mid:
                             engine.llm.model = mid
                             console.print(
-                                f"[{COLORS['success']}]Switched to {get_model_short_name(mid)}[/]"
+                                f"[{COLORS['success']}]{GLYPHS['check']} Switched to {get_model_short_name(mid)}[/]"
                             )
                         else:
-                            console.print(f"[{COLORS['error']}]Unknown model: {arg}[/]")
+                            console.print(f"[{COLORS['error']}]{GLYPHS['cross']} Unknown model: {arg}[/]")
 
                 elif cmd == "/provider":
                     if not arg:
                         console.print(
-                            f"[{COLORS['text_dim']}]Current: [bold]{engine.llm.provider_name}[/][/]\n"
+                            f"  [{COLORS['text_dim']}]Current: [bold]{engine.llm.provider_name}[/][/]\n"
                             f"  Available: anthropic, openai, ollama"
                         )
                     elif arg in ("anthropic", "openai", "ollama"):
@@ -221,35 +239,37 @@ async def run_repl() -> None:
                         engine.llm.model = get_default_model(arg)
                         engine.llm.reset_client()
                         console.print(
-                            f"[{COLORS['success']}]Switched to {arg} "
+                            f"[{COLORS['success']}]{GLYPHS['check']} Switched to {arg} "
                             f"({get_model_short_name(engine.llm.model)})[/]"
                         )
                     else:
-                        console.print(f"[{COLORS['error']}]Unknown provider: {arg}[/]")
+                        console.print(f"[{COLORS['error']}]{GLYPHS['cross']} Unknown provider: {arg}[/]")
 
                 elif cmd == "/theme":
                     if not arg:
                         themes = available_themes()
                         current = get_theme()
-                        console.print(f"[{COLORS['text_dim']}]Current: [bold]{current}[/][/]")
+                        console.print(f"\n{section_header('Themes', 40)}")
+                        console.print(f"  [{COLORS['text_dim']}]Current: [bold]{current}[/][/]")
                         for t in themes:
-                            marker = " [active]" if t == current else ""
-                            console.print(f"  [{COLORS['accent']}]{t}[/]{marker}")
+                            marker = f" [{COLORS['success']}]{GLYPHS['check']}[/]" if t == current else ""
+                            console.print(f"  [{COLORS['accent']}]{GLYPHS['bullet']}[/] [{COLORS['accent']}]{t}[/]{marker}")
+                        console.print(f"{section_footer(40)}\n")
                     else:
                         if set_theme(arg):
-                            console.print(f"[{COLORS['success']}]Theme set to {arg}[/]")
+                            console.print(f"[{COLORS['success']}]{GLYPHS['check']} Theme set to {arg}[/]")
                         else:
                             console.print(
-                                f"[{COLORS['error']}]Unknown theme: {arg}. "
+                                f"[{COLORS['error']}]{GLYPHS['cross']} Unknown theme: {arg}. "
                                 f"Available: {', '.join(available_themes())}[/]"
                             )
 
                 elif cmd == "/copy":
                     if last_response:
                         if _copy_to_clipboard(last_response):
-                            console.print(f"[{COLORS['success']}]Copied to clipboard.[/]")
+                            console.print(f"[{COLORS['success']}]{GLYPHS['check']} Copied to clipboard.[/]")
                         else:
-                            console.print(f"[{COLORS['error']}]Clipboard not available.[/]")
+                            console.print(f"[{COLORS['error']}]{GLYPHS['cross']} Clipboard not available.[/]")
                     else:
                         console.print(f"[{COLORS['text_dim']}]Nothing to copy.[/]")
 
@@ -265,7 +285,7 @@ async def run_repl() -> None:
                             lines.append(f"## Assistant\n\n{content}\n")
                     if lines:
                         Path(filename).write_text("\n".join(lines))
-                        console.print(f"[{COLORS['success']}]Exported to {filename}[/]")
+                        console.print(f"[{COLORS['success']}]{GLYPHS['check']} Exported to {filename}[/]")
                     else:
                         console.print(f"[{COLORS['text_dim']}]No conversation to export.[/]")
 
@@ -273,25 +293,19 @@ async def run_repl() -> None:
                     u = engine.llm.usage
                     short = get_model_short_name(engine.llm.model)
                     pricing = get_model_pricing(engine.llm.model)
-                    inp_cost = u.input_tokens * pricing["input"] / 1_000_000
-                    out_cost = u.output_tokens * pricing["output"] / 1_000_000
-                    total = inp_cost + out_cost
-                    rate = cost_tracker.dollars_per_hour(total)
-                    console.print(
-                        f"\n[bold]Cost[/] [{COLORS['text_dim']}]({short})[/]\n"
-                        f"  input   {u.input_tokens:>8,} tokens  ${inp_cost:.4f}\n"
-                        f"  output  {u.output_tokens:>8,} tokens  ${out_cost:.4f}\n"
-                        f"  {'─' * 36}\n"
-                        f"  [bold]total[/]                    [bold]${total:.4f}[/]"
+                    console.print(f"\n{cost_table(u.input_tokens, u.output_tokens, pricing, short)}")
+                    rate = cost_tracker.dollars_per_hour(
+                        u.input_tokens * pricing["input"] / 1_000_000
+                        + u.output_tokens * pricing["output"] / 1_000_000
                     )
                     if rate > 0:
-                        console.print(f"  rate                     ${rate:.2f}/hr")
+                        console.print(f"  [{COLORS['text_dim']}]${rate:.2f}/hr[/]")
                     recent = cost_tracker.task_history[-5:]
                     if recent:
-                        console.print(f"\n[bold]Recent[/]")
+                        console.print(f"\n  [bold]Recent[/]")
                         for t in recent:
                             console.print(
-                                f"  ${t.cost:.4f}  [{COLORS['text_dim']}]{t.label}[/]"
+                                f"  [{COLORS['text_dim']}]${t.cost:.4f}[/]  [{COLORS['text_muted']}]{t.label}[/]"
                             )
                     console.print()
 
@@ -300,15 +314,16 @@ async def run_repl() -> None:
                     source = creds.resolve_source(prov)
                     key = creds.resolve_api_key(prov)
                     redacted = creds.redact_key(key) if key else "(none)"
+                    console.print(f"\n{section_header('Status', 40)}")
                     console.print(
-                        f"\n[bold]Status[/]\n"
                         f"  provider  [{COLORS['text_dim']}]{prov}[/]\n"
                         f"  auth      [{COLORS['text_dim']}]{source}[/]\n"
                         f"  key       [{COLORS['text_dim']}]{redacted}[/]\n"
                         f"  model     [{COLORS['text_dim']}]{engine.llm.model}[/]\n"
                         f"  tokens    [{COLORS['text_dim']}]{engine.llm.usage.total:,}[/]\n"
-                        f"  theme     [{COLORS['text_dim']}]{get_theme()}[/]\n"
+                        f"  theme     [{COLORS['text_dim']}]{get_theme()}[/]"
                     )
+                    console.print(f"{section_footer(40)}\n")
 
                 elif cmd == "/skill":
                     sub_parts = user_input.split(maxsplit=2)
@@ -321,29 +336,31 @@ async def run_repl() -> None:
                         if not skills:
                             console.print(f"[{COLORS['text_dim']}]No skills installed.[/]")
                         else:
-                            console.print(f"\n[bold]Installed Skills[/]")
+                            console.print(f"\n{section_header('Installed Skills', 44)}")
                             for s in skills:
                                 console.print(
-                                    f"  [{COLORS['accent']}]{s['name']}[/]  "
+                                    f"  [{COLORS['accent']}]{GLYPHS['bullet']}[/] "
+                                    f"[{COLORS['accent']}]{s['name']}[/]  "
                                     f"v{s['version']}  "
                                     f"[{COLORS['text_dim']}]{s['description'][:50]}[/]"
                                 )
-                            console.print()
+                            console.print(f"{section_footer(44)}\n")
                     elif subcmd == "install" and subarg:
                         ok, msg = await mgr.install(subarg)
+                        icon = GLYPHS['check'] if ok else GLYPHS['cross']
                         color = COLORS['success'] if ok else COLORS['error']
-                        console.print(f"[{color}]{msg}[/]")
+                        console.print(f"[{color}]{icon} {msg}[/]")
                     elif subcmd == "export" and subarg:
                         yaml_text = mgr.export_skill(subarg)
                         if yaml_text:
                             console.print(f"```yaml\n{yaml_text}```")
                         else:
-                            console.print(f"[{COLORS['error']}]Skill not found: {subarg}[/]")
+                            console.print(f"[{COLORS['error']}]{GLYPHS['cross']} Skill not found: {subarg}[/]")
                     elif subcmd == "remove" and subarg:
                         if mgr.remove_skill(subarg):
-                            console.print(f"[{COLORS['success']}]Removed {subarg}[/]")
+                            console.print(f"[{COLORS['success']}]{GLYPHS['check']} Removed {subarg}[/]")
                         else:
-                            console.print(f"[{COLORS['error']}]Skill not found: {subarg}[/]")
+                            console.print(f"[{COLORS['error']}]{GLYPHS['cross']} Skill not found: {subarg}[/]")
                     else:
                         console.print(
                             f"Usage: /skill list | install <path> | export <name> | remove <name>"
@@ -362,10 +379,10 @@ async def run_repl() -> None:
                             engine.conversation_history[:] = compacted
                             after = len(engine.conversation_history)
                             console.print(
-                                f"[{COLORS['success']}]Compacted {before} -> {after} messages[/]"
+                                f"[{COLORS['success']}]{GLYPHS['check']} Compacted {before} -> {after} messages[/]"
                             )
                         except Exception as exc:
-                            console.print(f"[{COLORS['error']}]Error: {exc}[/]")
+                            console.print(f"[{COLORS['error']}]{GLYPHS['cross']} Error: {exc}[/]")
 
                 else:
                     console.print(
@@ -373,8 +390,21 @@ async def run_repl() -> None:
                     )
                 continue
 
-            # --- Run agent ---
-            console.print(f"[{COLORS['text_muted']}]{SPINNERS['dots'][0]} thinking...[/]", end="\r")
+            # --- Run agent with async spinner ---
+            spinner_frames = SPINNERS["pulse"]
+            spinner_running = True
+
+            async def _show_spinner() -> None:
+                i = 0
+                while spinner_running:
+                    frame = spinner_frames[i % len(spinner_frames)]
+                    console.print(
+                        f"\r  [{COLORS['accent']}]{frame}[/] "
+                        f"[{COLORS['text_dim']}]thinking{GLYPHS['ellipsis']}[/]",
+                        end="",
+                    )
+                    i += 1
+                    await asyncio.sleep(0.1)
 
             # Set up approval handler
             async def _handle_approval(msg: Message) -> None:
@@ -384,15 +414,10 @@ async def run_repl() -> None:
                 diff_text = msg.payload.get("diff_text")
                 tool_id = msg.payload.get("tool_id", "")
 
-                console.print(f"\n[bold {COLORS['warning']}]Approval needed:[/] {cmd_text}")
+                console.print(f"\n[bold {COLORS['warning']}]{GLYPHS['diamond']} Approval needed:[/] {cmd_text}")
                 if diff_text:
-                    for line in diff_text.split("\n")[:30]:
-                        if line.startswith("+"):
-                            console.print(f"[{COLORS['success']}]{line}[/]")
-                        elif line.startswith("-"):
-                            console.print(f"[{COLORS['error']}]{line}[/]")
-                        else:
-                            console.print(f"[{COLORS['text_dim']}]{line}[/]")
+                    from opentf.cli.renderables import diff_block
+                    console.print(diff_block(diff_text))
 
                 try:
                     choice = console.input(
@@ -427,10 +452,16 @@ async def run_repl() -> None:
             signal.signal(signal.SIGINT, _on_sigint)
 
             try:
-                results = await engine.run(user_input)
+                spinner_task = asyncio.create_task(_show_spinner())
 
-                # Clear the "thinking..." line
-                console.print(" " * 40, end="\r")
+                try:
+                    results = await engine.run(user_input)
+                finally:
+                    spinner_running = False
+                    await spinner_task
+
+                # Clear the spinner line
+                console.print("\r" + " " * 50 + "\r", end="")
 
                 for result in results:
                     if result["success"]:
@@ -443,7 +474,7 @@ async def run_repl() -> None:
                     else:
                         errors = result.get("errors", [])
                         for err in errors:
-                            console.print(f"[{COLORS['error']}]{err}[/]")
+                            console.print(f"[{COLORS['error']}]{GLYPHS['cross']} {err}[/]")
 
                 # Track cost
                 u = engine.llm.usage
@@ -457,14 +488,11 @@ async def run_repl() -> None:
                 )
 
             except Exception as exc:
-                console.print(f"\n[{COLORS['error']}]Error: {exc}[/]")
+                spinner_running = False
+                console.print(f"\n[{COLORS['error']}]{GLYPHS['cross']} Error: {exc}[/]")
             finally:
                 signal.signal(signal.SIGINT, old_handler)
                 engine.bus.unsubscribe(MessageType.APPROVAL_REQUESTED, _handle_approval)
 
     finally:
         await engine.close()
-
-
-# Import here to avoid circular
-from opentf.cli.theme import SPINNERS

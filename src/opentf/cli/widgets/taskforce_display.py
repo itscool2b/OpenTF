@@ -1,7 +1,7 @@
 """Dedicated task force ops-center display.
 
-Split-panel interface showing agent status on the left
-and live tool activity on the right.
+Split-panel interface showing animated agent cards on the left
+and styled live tool activity on the right.
 """
 
 from __future__ import annotations
@@ -13,7 +13,8 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import RichLog, Static
 
-from opentf.cli.theme import COLORS
+from opentf.cli.theme import BORDERS, COLORS, GLYPHS, SPINNERS, gradient_text, get_border_style
+from opentf.cli.renderables import animated_progress_bar, key_badge, status_badge
 
 _A = COLORS['accent']
 _B = COLORS['border']
@@ -24,7 +25,7 @@ _M = COLORS['text_muted']
 
 
 class TaskForceHeader(Static):
-    """Top bar with mission label, progress, and elapsed time."""
+    """Top bar with gradient title, shimmer progress bar, and elapsed time."""
 
     DEFAULT_CSS = f"""
     TaskForceHeader {{
@@ -41,6 +42,7 @@ class TaskForceHeader(Static):
         self._done = 0
         self._total = 0
         self._start = time.monotonic()
+        self._frame = 0
         self._timer = None
 
     def on_mount(self) -> None:
@@ -48,6 +50,7 @@ class TaskForceHeader(Static):
         self._refresh()
 
     def _tick(self) -> None:
+        self._frame += 1
         self._refresh()
 
     def set_progress(self, done: int, total: int) -> None:
@@ -64,16 +67,19 @@ class TaskForceHeader(Static):
             secs = int(elapsed % 60)
             time_str = f"{mins}m{secs:02d}s"
 
+        title = gradient_text("TASK FORCE")
         bar = ""
         if self._total > 0:
-            filled = int((self._done / self._total) * 20)
-            bar = f" [{_S}]{'=' * filled}[/][{_M}]{'.' * (20 - filled)}[/] "
+            bar = f"  {animated_progress_bar(self._done, self._total, 20, self._frame)}  "
+
+        done_display = f"[{_S}]{self._done}[/]" if self._done > 0 else f"[{_D}]0[/]"
+        elapsed_badge = f"[{_M}]{GLYPHS['bullet']} {time_str}[/]"
 
         self.update(
-            f"[bold {_A}]TASK FORCE[/]  [{_D}]{self._label}[/]"
+            f"[bold]{title}[/]  [{_D}]{self._label}[/]"
             f"    {bar}"
-            f"[{_D}]{self._done}/{self._total}[/]"
-            f"  [{_M}]{time_str}[/]"
+            f"{done_display}[{_D}]/{self._total}[/]"
+            f"  {elapsed_badge}"
         )
 
     def stop(self) -> None:
@@ -83,12 +89,13 @@ class TaskForceHeader(Static):
 
 
 class AgentEntry(Static):
-    """Single agent status line in the agent panel."""
+    """Single agent displayed as a box-drawn card with animated spinner."""
 
     DEFAULT_CSS = f"""
     AgentEntry {{
-        height: 2;
+        height: auto;
         padding: 0 1;
+        margin-bottom: 0;
     }}
     """
 
@@ -97,59 +104,116 @@ class AgentEntry(Static):
         self.agent_name = name
         self._status = "waiting"
         self._action = "queued"
+        self._frame = 0
+        self._anim_timer = None
         self._refresh()
 
     def set_active(self, action: str = "working...") -> None:
         self._status = "active"
         self._action = action
+        if not self._anim_timer:
+            self._anim_timer = self.set_interval(0.15, self._tick_anim)
         self._refresh()
 
     def set_done(self, action: str = "complete") -> None:
         self._status = "done"
         self._action = action
+        self._stop_anim()
         self._refresh()
 
     def set_failed(self, action: str = "failed") -> None:
         self._status = "failed"
         self._action = action
+        self._stop_anim()
+        self._refresh()
+
+    def _stop_anim(self) -> None:
+        if self._anim_timer:
+            self._anim_timer.stop()
+            self._anim_timer = None
+
+    def _tick_anim(self) -> None:
+        self._frame += 1
         self._refresh()
 
     def _refresh(self) -> None:
-        icons = {
-            "active": f"[{_A}]>>[/]",
-            "done": f"[{_S}]ok[/]",
-            "failed": f"[{_E}]!![/]",
-            "waiting": f"[{_M}]--[/]",
+        b = BORDERS[get_border_style()]
+        width = 38
+        inner = width - 2
+
+        status_colors = {
+            "active": _A, "done": _S, "failed": _E, "waiting": _M,
         }
-        colors = {
-            "active": _A,
-            "done": _S,
-            "failed": _E,
-            "waiting": _M,
+        status_labels = {
+            "active": "ACTIVE", "done": "DONE", "failed": "FAILED", "waiting": "WAIT",
         }
-        icon = icons.get(self._status, f"[{_M}]--[/]")
-        color = colors.get(self._status, _M)
-        self.update(
-            f" {icon} [bold {color}]{self.agent_name}[/]\n"
-            f"      [{_D}]{self._action}[/]"
+        spinners = {
+            "active": SPINNERS["pulse"][self._frame % len(SPINNERS["pulse"])],
+            "done":   GLYPHS["check"],
+            "failed": GLYPHS["cross"],
+            "waiting": GLYPHS["dot"],
+        }
+
+        c = status_colors.get(self._status, _M)
+        label = status_labels.get(self._status, "?")
+        spinner = spinners.get(self._status, GLYPHS["dot"])
+
+        # Top line: ╭─ name ──────── BADGE ╮
+        badge = f"[bold {c}]{label}[/]"
+        name_part = f" {self.agent_name} "
+        badge_raw = f" {label} "
+        pad = max(inner - len(name_part) - len(badge_raw) - 1, 0)
+        top = (
+            f"[{c}]{b['tl']}{b['h']}[/]"
+            f"[bold {COLORS['text']}]{name_part}[/]"
+            f"[{c}]{b['h'] * pad}[/]"
+            f" {badge}"
+            f"[{c}]{b['tr']}[/]"
         )
+
+        # Middle: │  ◐ action text           │
+        action_text = f" {spinner} {self._action}"
+        action_pad = max(inner - len(action_text) - 1, 0)
+        mid = (
+            f"[{c}]{b['v']}[/]"
+            f"[{_D}]{action_text}{' ' * action_pad}[/]"
+            f"[{c}]{b['v']}[/]"
+        )
+
+        # Bottom: ╰───────────────────────────╯
+        bottom = f"[{c}]{b['bl']}{b['h'] * inner}{b['br']}[/]"
+
+        self.update(f"{top}\n{mid}\n{bottom}")
 
 
 class AgentPanel(Vertical):
-    """Left panel showing all agents and their status."""
+    """Left panel showing all agents as styled cards."""
 
     DEFAULT_CSS = f"""
     AgentPanel {{
         width: 1fr;
         border-right: solid {COLORS['border']};
-        padding: 1 0;
+        padding: 0 0;
         overflow-y: auto;
+    }}
+    AgentPanel #tf-agents-title {{
+        height: 1;
+        background: {COLORS['panel']};
+        padding: 0 2;
+        color: {COLORS['accent']};
+        text-style: bold;
     }}
     """
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._entries: dict[str, AgentEntry] = {}
+
+    def compose(self) -> ComposeResult:
+        yield Static(
+            f"{GLYPHS['agent']} {gradient_text('Agents')}",
+            id="tf-agents-title",
+        )
 
     def add_agent(self, name: str) -> None:
         if name not in self._entries:
@@ -171,7 +235,7 @@ class AgentPanel(Vertical):
 
 
 class LivePanel(RichLog):
-    """Right panel showing live tool activity from agents."""
+    """Right panel showing live tool activity with colored left-gutter."""
 
     DEFAULT_CSS = f"""
     LivePanel {{
@@ -179,37 +243,56 @@ class LivePanel(RichLog):
         padding: 0 1;
         background: {COLORS['bg']};
     }}
+    LivePanel #tf-live-title {{
+        height: 1;
+        background: {COLORS['panel']};
+        padding: 0 2;
+        color: {COLORS['accent']};
+        text-style: bold;
+    }}
     """
 
     def __init__(self, **kwargs) -> None:
         super().__init__(markup=True, wrap=True, auto_scroll=True, **kwargs)
+        self._last_agent: str = ""
 
     def log_tool(self, agent: str, tool: str, detail: str = "") -> None:
         now = datetime.now(timezone.utc).strftime("%H:%M:%S")
+        # Divider between different agents
+        if self._last_agent and agent != self._last_agent:
+            self.write(f"[{_B}]{'─' * 44}[/]")
+        self._last_agent = agent
+
+        gutter = f"[{COLORS['accent2']}]{GLYPHS['arrow_right']}[/]"
         if detail:
             self.write(
-                f"[{_M}]{now}[/] [{_A}]{agent}[/] [{COLORS['accent2']}]{tool}[/] [{_D}]{detail[:60]}[/]"
+                f" {gutter} [{_M}]{now}[/] [{_A}]{agent}[/] "
+                f"[bold {COLORS['accent2']}]{tool}[/] [{_D}]{detail[:55]}[/]"
             )
         else:
             self.write(
-                f"[{_M}]{now}[/] [{_A}]{agent}[/] [{COLORS['accent2']}]{tool}[/]"
+                f" {gutter} [{_M}]{now}[/] [{_A}]{agent}[/] "
+                f"[bold {COLORS['accent2']}]{tool}[/]"
             )
 
     def log_result(self, agent: str, tool: str, ok: bool, summary: str = "") -> None:
         now = datetime.now(timezone.utc).strftime("%H:%M:%S")
-        color = _S if ok else _E
-        icon = "ok" if ok else "!!"
+        if ok:
+            gutter = f"[{_S}]{GLYPHS['check']}[/]"
+        else:
+            gutter = f"[{_E}]{GLYPHS['cross']}[/]"
         self.write(
-            f"[{_M}]{now}[/] [{_A}]{agent}[/] [{color}]{icon}[/] [{_D}]{summary[:60]}[/]"
+            f" {gutter} [{_M}]{now}[/] [{_A}]{agent}[/] [{_D}]{summary[:55]}[/]"
         )
 
     def log_status(self, agent: str, status: str) -> None:
         now = datetime.now(timezone.utc).strftime("%H:%M:%S")
-        self.write(f"[{_M}]{now}[/] [{_A}]{agent}[/] [{_D}]{status}[/]")
+        gutter = f"[{_M}]{GLYPHS['bullet']}[/]"
+        self.write(f" {gutter} [{_M}]{now}[/] [{_A}]{agent}[/] [{_D}]{status}[/]")
 
 
 class TaskForceFooter(Static):
-    """Bottom bar with controls hint."""
+    """Bottom bar with key badges and live summary."""
 
     DEFAULT_CSS = f"""
     TaskForceFooter {{
@@ -221,14 +304,47 @@ class TaskForceFooter(Static):
     """
 
     def __init__(self, **kwargs) -> None:
-        super().__init__(
-            f"  [{_D}]Esc[/] cancel",
-            **kwargs,
+        super().__init__(**kwargs)
+        self._wave = 0
+        self._total_waves = 0
+        self._active_count = 0
+        self._tool_count = 0
+        self._refresh()
+
+    def _refresh(self) -> None:
+        keys = (
+            f"{key_badge('Esc', 'cancel')}   "
+            f"{key_badge('Ctrl+C', 'abort')}"
         )
+        summary_parts: list[str] = []
+        if self._total_waves > 0:
+            summary_parts.append(f"Wave {self._wave}/{self._total_waves}")
+        if self._active_count > 0:
+            summary_parts.append(f"{self._active_count} active")
+        if self._tool_count > 0:
+            summary_parts.append(f"{self._tool_count} tools")
+        summary = f" [{_M}]{GLYPHS['sep']}[/] ".join(
+            f"[{_D}]{p}[/]" for p in summary_parts
+        )
+        sep = f"    [{_M}]{GLYPHS['sep']}[/]    " if summary else ""
+        self.update(f"  {keys}{sep}{summary}")
+
+    def update_summary(
+        self,
+        wave: int = 0,
+        total_waves: int = 0,
+        active: int = 0,
+        tools: int = 0,
+    ) -> None:
+        self._wave = wave
+        self._total_waves = total_waves
+        self._active_count = active
+        self._tool_count = tools
+        self._refresh()
 
 
 class TaskForceDisplay(Vertical):
-    """Full task force ops-center interface."""
+    """Full task force ops-center interface with agent cards and live feed."""
 
     DEFAULT_CSS = f"""
     TaskForceDisplay {{
@@ -266,3 +382,7 @@ class TaskForceDisplay(Vertical):
     @property
     def live(self) -> LivePanel:
         return self.query_one(LivePanel)
+
+    @property
+    def footer(self) -> TaskForceFooter:
+        return self.query_one(TaskForceFooter)

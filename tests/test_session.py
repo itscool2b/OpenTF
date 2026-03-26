@@ -16,7 +16,9 @@ def test_save_creates_file(mgr: SessionManager) -> None:
     history = [{"role": "user", "content": "hello"}]
     path = mgr.save(history, model="sonnet")
     assert path.exists()
-    data = json.loads(path.read_text())
+    # Now uses SQLite -- verify via load()
+    data = mgr.load()
+    assert data is not None
     assert data["message_count"] == 1
     assert data["model"] == "sonnet"
     assert len(data["history"]) == 1

@@ -17,6 +17,9 @@ from opentf.tools.file_tools import (
     ALL_TOOLS as FILE_TOOLS,
     CODE_SAFE_COMMANDS,
     all_handlers as file_handlers,
+    handle_read_file,
+    handle_list_directory,
+    handle_search_files,
 )
 from opentf.tools.data_tools import DATA_TOOLS, data_handlers
 from opentf.tools.git_tools import GIT_TOOLS, git_handlers
@@ -63,23 +66,46 @@ create, modify, or work with files, use the tools directly. Never output code fo
 the user to copy-paste.
 
 Tools available:
-- read_file, write_file, edit_file: File operations (sandboxed to project directory)
+- read_file, write_file, edit_file, apply_diff: File operations (sandboxed to project)
+- batch_edit: Apply multiple edits atomically across files
+- find_references, replace_in_files: Codebase-wide search and replace
 - list_directory, search_files: Project exploration
-- run_command: Shell commands (safe commands auto-approve, others need user approval)
+- run_command: Shell commands (safe auto-approve, others need approval)
+- spawn_subagent: Delegate focused subtasks to isolated agents
 - web_search, read_url: Web research (if available)
 
 You also have:
-- Persistent memory: Past interactions are stored and retrieved automatically. \
-You can reference solutions from previous sessions.
-- Workspace awareness: You know the project language, framework, test command, \
-and file structure.
-- File safety: Every file change is backed up. The user can /undo changes.
+- Persistent memory across sessions
+- Workspace awareness: language, framework, test command, file structure
+- Repository map: key function/class signatures ranked by importance
+- File safety: every change is backed up, user can /undo
+- Auto-test: test failures after edits are fed back to you automatically
 
-Guidelines:
-- Do not narrate routine tool calls. Just call the tool.
-- Prefer edit_file over write_file for modifications.
-- Match existing code style.
-- Report briefly what you did after completing the task."""
+Approach:
+1. IMPORTANT: Always read_file before edit_file. Never edit based on memory or assumptions.
+2. For complex tasks: Think step by step. Read relevant files first.
+3. For multi-file changes: Use batch_edit or spawn_subagent for parallel work.
+4. Prefer edit_file over write_file for modifications.
+5. Match existing code style.
+6. Report briefly what you did after completing the task.
+7. Do not narrate routine tool calls -- just call the tool."""
+
+ARCHITECT_PROMPT = """\
+You are an expert software architect. Analyze the codebase and plan the changes \
+needed to accomplish the user's task.
+
+DO NOT make any file changes. Instead:
+1. Read the relevant files to understand the current state
+2. Think through the architecture and approach
+3. Output a detailed plan listing:
+   - Which files need to change and why
+   - What specific changes to make in each file
+   - Any new files to create
+   - Any tests to add or update
+   - Potential risks or edge cases
+
+Be specific about the changes -- include function names, line references, \
+and exact code patterns to look for."""
 
 # Keywords that indicate tool access is needed
 _TOOL_SIGNALS = {
@@ -103,6 +129,25 @@ def _needs_tools(text: str) -> bool:
         return False
     # Long messages get tools by default
     return True
+
+
+# Signals for complex tasks that benefit from architect mode
+_ARCHITECT_SIGNALS = {
+    "refactor", "redesign", "rewrite", "restructure", "architect",
+    "overhaul", "migrate", "implement feature", "add feature",
+}
+
+
+def _needs_architect(text: str) -> bool:
+    """Check if task is complex enough to benefit from architect mode."""
+    lower = text.lower()
+    # Explicit triggers
+    if any(sig in lower for sig in _ARCHITECT_SIGNALS):
+        return True
+    # Long detailed requests likely benefit from planning
+    if len(text) > 200 and _needs_tools(text):
+        return True
+    return False
 
 
 class MainAgent(BaseAgent):
@@ -158,19 +203,58 @@ class MainAgent(BaseAgent):
                 token_usage=tokens,
             )
 
+        # Architect mode: for complex tasks, plan first then execute
+        if _needs_architect(user_input):
+            architect_plan = await self._architect_pass(messages, context)
+            if architect_plan:
+                # Inject the plan as context for the editor pass
+                messages.append({"role": "assistant", "content": architect_plan})
+                messages.append({
+                    "role": "user",
+                    "content": "Now execute the plan above. Use tools to make the changes.",
+                })
+
         # Tool-enabled: unified tool set
         tools, handlers = self._build_tools()
         system = self._build_system_prompt(context)
         bus = context.constraints.get("_bus")
 
+        # Auto-test hook: run detected test command after edits
+        test_cmd = context.constraints.get("test_command", "")
+        post_edit_hook = None
+        if test_cmd:
+            from opentf.tools.file_tools import _execute_command
+
+            async def _auto_test() -> str | None:
+                result = await _execute_command(test_cmd)
+                # Only feed back failures
+                lower = result.lower()
+                if any(kw in lower for kw in ("failed", "error", "traceback", "fail")):
+                    return result[:3000]  # Cap test output
+                return None
+
+            post_edit_hook = _auto_test
+
+        # Wire actual compress handler with message access
+        try:
+            from opentf.core.compaction import make_compress_handler
+            handlers["compress"] = make_compress_handler(
+                llm=self.llm,
+                get_messages=lambda: messages,
+                set_messages=lambda new_msgs: (messages.clear(), messages.extend(new_msgs)),
+            )
+        except ImportError:
+            pass
+
         loop = ToolLoop(
             llm=self.llm,
             tools=tools,
             handlers=handlers,
-            max_iterations=15,
+            max_iterations=30,
             bus=bus,
             source="main",
             on_stream=on_stream,
+            post_edit_hook=post_edit_hook,
         )
 
         text, tokens = await loop.run(
@@ -195,10 +279,64 @@ class MainAgent(BaseAgent):
             token_usage=tokens,
         )
 
+    async def _architect_pass(
+        self, messages: list[dict], context: AgentContext,
+    ) -> str | None:
+        """Architect pass: reason about changes without making them.
+
+        Inspired by Aider's architect mode -- separates planning from editing.
+        Uses read-only tools (read_file, list_directory, search_files) to
+        understand the codebase, then outputs a detailed plan.
+        """
+        # Read-only tools for the architect
+        read_tools = [
+            t for t in ALL_TOOLS
+            if t["name"] in ("read_file", "list_directory", "search_files")
+        ]
+        read_handlers = {
+            "read_file": handle_read_file,
+            "list_directory": handle_list_directory,
+            "search_files": handle_search_files,
+        }
+
+        system = ARCHITECT_PROMPT
+        repo_map = context.constraints.get("repo_map", "")
+        if repo_map:
+            system += f"\n\n{repo_map}"
+
+        loop = ToolLoop(
+            llm=self.llm,
+            tools=read_tools,
+            handlers=read_handlers,
+            max_iterations=10,
+            source="architect",
+        )
+
+        try:
+            plan_text, _ = await loop.run(
+                messages=list(messages),
+                system=system,
+                temperature=0.3,
+            )
+            if plan_text and len(plan_text) > 50:
+                return plan_text
+        except Exception as exc:
+            log.warning("Architect pass failed (non-fatal): %s", exc)
+
+        return None
+
     def _build_tools(self) -> tuple[list[dict], dict]:
         """Build unified tool set -- all tools available."""
         tools = list(FILE_TOOLS)
         handlers = file_handlers(CODE_SAFE_COMMANDS)
+
+        # Unified diff tool
+        try:
+            from opentf.tools.diff_tools import diff_tools, diff_handlers
+            tools.extend(diff_tools())
+            handlers.update(diff_handlers())
+        except ImportError:
+            pass
 
         if _HAS_WEB:
             tools.extend(RESEARCH_TOOLS)
@@ -210,6 +348,40 @@ class MainAgent(BaseAgent):
 
         tools.extend(GIT_TOOLS)
         handlers.update(git_handlers())
+
+        # Refactoring tools (batch edit, find references, replace in files)
+        try:
+            from opentf.tools.refactor_tools import refactor_tools, refactor_handlers
+            tools.extend(refactor_tools())
+            handlers.update(refactor_handlers())
+        except ImportError:
+            pass
+
+        # Subagent tool (isolated context, parallel execution)
+        try:
+            from opentf.core.subagent import SPAWN_SUBAGENT_TOOL, make_subagent_handler
+            tools.append(SPAWN_SUBAGENT_TOOL)
+            handlers["spawn_subagent"] = make_subagent_handler(self.llm)
+        except ImportError:
+            pass
+
+        # Compress tool definition (handler wired in process() with message access)
+        try:
+            from opentf.core.compaction import COMPRESS_TOOL
+            tools.append(COMPRESS_TOOL)
+        except ImportError:
+            pass
+
+        # LSP diagnostics tool (shared manager for post-edit feedback)
+        try:
+            from opentf.tools.lsp_client import DIAGNOSTICS_TOOL, LSPManager, make_diagnostics_handler
+            from opentf.tools.file_tools import set_lsp_manager
+            manager = LSPManager()
+            set_lsp_manager(manager)  # Share with file_tools for post-edit diagnostics
+            tools.append(DIAGNOSTICS_TOOL)
+            handlers["diagnostics"] = make_diagnostics_handler(manager)
+        except ImportError:
+            pass
 
         return tools, handlers
 
@@ -223,6 +395,11 @@ class MainAgent(BaseAgent):
         test_cmd = context.constraints.get("test_command", "")
         if test_cmd:
             base += f"\nTest command: {test_cmd}"
+
+        # Repo map (tree-sitter + PageRank ranked symbols)
+        repo_map = context.constraints.get("repo_map", "")
+        if repo_map:
+            base += f"\n\n{repo_map}"
 
         memory = context.constraints.get("memory_context", "")
         if memory:

@@ -1,4 +1,4 @@
-"""Chat-style output display with message blocks and thinking indicator."""
+"""Chat-style output display with message blocks, streaming, and thinking indicator."""
 
 from __future__ import annotations
 
@@ -6,11 +6,15 @@ from textual.app import ComposeResult
 from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Markdown, Static
 
-from opentf.cli.theme import COLORS
+from opentf.cli.theme import COLORS, GLYPHS, SPINNERS
+
+
+# Rotating thinking labels
+_THINKING_LABELS = ["thinking", "reasoning", "processing"]
 
 
 class ThinkingIndicator(Static):
-    """Animated thinking dots shown during LLM processing."""
+    """Animated thinking indicator with pulse spinner and cycling labels."""
 
     DEFAULT_CSS = f"""
     ThinkingIndicator {{
@@ -22,24 +26,34 @@ class ThinkingIndicator(Static):
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        self._dots = 0
+        self._frame = 0
+        self._label_index = 0
+        self._label_tick = 0
         self._timer = None
 
     def on_mount(self) -> None:
-        self._timer = self.set_interval(0.4, self._tick)
+        self._timer = self.set_interval(0.15, self._tick)
         self._update_display()
 
     def _tick(self) -> None:
-        self._dots = (self._dots + 1) % 4
+        self._frame += 1
+        # Cycle label every ~2 seconds (2.0 / 0.15 ~= 13 ticks)
+        self._label_tick += 1
+        if self._label_tick >= 13:
+            self._label_tick = 0
+            self._label_index = (self._label_index + 1) % len(_THINKING_LABELS)
         self._update_display()
 
     def _update_display(self) -> None:
-        dots = "." * self._dots + " " * (3 - self._dots)
-        self.update(f"[{COLORS['text_dim']}]  thinking{dots}[/]")
+        spinner = SPINNERS["pulse"][self._frame % len(SPINNERS["pulse"])]
+        label = _THINKING_LABELS[self._label_index]
+        self.update(
+            f"  [{COLORS['accent']}]{spinner}[/] [{COLORS['text_dim']}]{label}{GLYPHS['ellipsis']}[/]"
+        )
 
 
 class MessageBlock(Static):
-    """A single chat message with role-based left border."""
+    """A single chat message with role-based left border and styled labels."""
 
     DEFAULT_CSS = f"""
     MessageBlock {{
@@ -64,8 +78,13 @@ class MessageBlock(Static):
     """
 
     def __init__(self, text: str = "", role: str = "system", **kwargs) -> None:
-        # Pass text directly to Static so it renders immediately
-        super().__init__(text, classes=f"{role}-msg", **kwargs)
+        if role == "user":
+            display = f"[bold {COLORS['user_msg']}]you {GLYPHS['arrow_right']}[/] [bold]{text}[/]"
+        elif role == "system":
+            display = f"[{COLORS['text_muted']}]{GLYPHS['dot']}[/] {text}"
+        else:
+            display = text
+        super().__init__(display, classes=f"{role}-msg", **kwargs)
 
 
 class StreamBlock(Vertical):
@@ -88,13 +107,37 @@ class StreamBlock(Vertical):
         super().__init__(**kwargs)
         self._content = ""
         self._md: Markdown | None = None
+        self._cursor_visible: bool = True
+        self._cursor_timer = None
 
     def compose(self) -> ComposeResult:
         self._md = Markdown("")
         yield self._md
 
+    def on_mount(self) -> None:
+        self._cursor_timer = self.set_interval(0.5, self._toggle_cursor)
+
+    def _toggle_cursor(self) -> None:
+        self._cursor_visible = not self._cursor_visible
+        self._render_content()
+
+    async def _render_content(self) -> None:
+        if self._md:
+            cursor = " \u258c" if self._cursor_visible else ""
+            await self._md.update(self._content + cursor)
+
     async def append(self, text: str) -> None:
         self._content += text
+        if self._md:
+            cursor = " \u258c" if self._cursor_visible else ""
+            await self._md.update(self._content + cursor)
+
+    async def finalize(self) -> None:
+        """Remove cursor and stop timer."""
+        if self._cursor_timer:
+            self._cursor_timer.stop()
+            self._cursor_timer = None
+        self._cursor_visible = False
         if self._md:
             await self._md.update(self._content)
 
@@ -116,9 +159,9 @@ class OutputDisplay(VerticalScroll):
         self._thinking: ThinkingIndicator | None = None
 
     async def add_user_message(self, text: str) -> None:
-        """Add a user message with purple left border."""
+        """Add a user message with styled label and border."""
         await self.hide_thinking()
-        block = MessageBlock(f"[{COLORS['text_dim']}]you >[/] [bold]{text}[/]", role="user")
+        block = MessageBlock(text, role="user")
         await self.mount(block)
         self.scroll_end(animate=False)
 
@@ -135,7 +178,9 @@ class OutputDisplay(VerticalScroll):
             self.scroll_end(animate=False)
 
     async def end_stream(self) -> None:
-        """Finalize the current stream."""
+        """Finalize the current stream (remove cursor)."""
+        if self._current_stream:
+            await self._current_stream.finalize()
         self._current_stream = None
 
     async def show_thinking(self) -> None:

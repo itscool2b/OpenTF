@@ -1,12 +1,12 @@
-"""Compact activity bar with live spinner and tool count."""
+"""Compact activity bar with animated spinners, badges, and tool count."""
 
 from __future__ import annotations
 
 from textual.widgets import Static
 
-from opentf.cli.theme import COLORS, SPINNERS
+from opentf.cli.theme import COLORS, GLYPHS, SPINNERS
 
-SPINNER_FRAMES = SPINNERS["dots"]
+SPINNER_FRAMES = SPINNERS["pulse"]
 
 
 class ActivityBar(Static):
@@ -65,26 +65,39 @@ class ActivityBar(Static):
         self.update(" ")
 
     def _refresh_bar(self) -> None:
-        B = COLORS['border']
-        D = COLORS['text_dim']
-        parts = []
+        sep = f" [{COLORS['border']}]{GLYPHS['sep']}[/] "
+        parts: list[str] = []
         for name, info in self._agents.items():
             state = info["state"]
             action = info["action"]
             if state == "active":
                 frame = SPINNER_FRAMES[self._frame % len(SPINNER_FRAMES)]
-                parts.append(f"[{COLORS['accent']}]{frame}[/] [bold]{name}[/] [{D}]{action}[/]")
+                parts.append(
+                    f"[{COLORS['accent']}]{frame}[/] [bold]{name}[/] "
+                    f"[{COLORS['text_dim']}]{action}[/]"
+                )
             elif state == "done":
-                parts.append(f"[{COLORS['success']}]>[/] [bold]{name}[/] [{D}]{action}[/]")
+                parts.append(
+                    f"[{COLORS['success']}]{GLYPHS['check']}[/] [bold]{name}[/] "
+                    f"[{COLORS['text_dim']}]{action}[/]"
+                )
             elif state == "error":
-                parts.append(f"[{COLORS['error']}]x[/] [bold]{name}[/] [{D}]{action}[/]")
+                parts.append(
+                    f"[{COLORS['error']}]{GLYPHS['cross']}[/] [bold]{name}[/] "
+                    f"[{COLORS['text_dim']}]{action}[/]"
+                )
             else:
-                parts.append(f"[{COLORS['text_muted']}].[/] [bold]{name}[/] [{D}]{action}[/]")
+                parts.append(
+                    f"[{COLORS['text_muted']}]{GLYPHS['dot']}[/] [bold]{name}[/] "
+                    f"[{COLORS['text_dim']}]{action}[/]"
+                )
 
-        sep = f" [{B}]|[/] "
         text = sep.join(parts) if parts else " "
 
         if self._tool_count > 0:
-            text += f" [{B}]|[/] [{COLORS['text_muted']}]{self._tool_count} tools[/]"
+            text += (
+                f" {sep}"
+                f"[{COLORS['text_muted']}]{GLYPHS['diamond']} {self._tool_count} tools[/]"
+            )
 
         self.update(text)

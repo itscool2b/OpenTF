@@ -15,6 +15,41 @@ memory:
   embedding_model: all-MiniLM-L6-v2
   top_k: 5
 
+tool_loop:
+  max_iterations: 30
+  token_budget: 150000
+  stuck_detection_window: 3
+  parallel: true
+  soft_limit_pct: 0.8
+
+editing:
+  fuzzy_threshold: 0.85
+  auto_test: true
+
+workspace:
+  tree_depth: 5
+  tree_max_lines: 100
+  use_repo_map: true
+  map_tokens: 1024
+
+compaction:
+  keep_recent: 6
+  chunk_size: 8
+
+formatters:
+  auto_detect: true
+  # Override auto-detected formatters:
+  # python: "black -q $FILE"
+  # javascript: "prettier --write $FILE"
+  # go: "gofmt -w $FILE"
+  # rust: "rustfmt $FILE"
+
+lsp:
+  # Language server commands (auto-detected if available):
+  # python: pyright --stdio
+  # typescript: typescript-language-server --stdio
+  # rust: rust-analyzer
+
 agents:
   validator:
     enabled: true

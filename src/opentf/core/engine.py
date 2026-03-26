@@ -122,6 +122,14 @@ class Engine:
                 await context_agent._retriever.close()
         except Exception:
             pass
+        # Shut down LSP servers
+        try:
+            from opentf.tools.file_tools import get_lsp_manager
+            lsp = get_lsp_manager()
+            if lsp is not None:
+                await lsp.shutdown()
+        except Exception:
+            pass
         self.bus.clear()
         self.conversation_history.clear()
         log.info("Engine shut down.")

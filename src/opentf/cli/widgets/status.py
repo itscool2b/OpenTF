@@ -6,7 +6,7 @@ import time
 
 from textual.widgets import Static
 
-from opentf.cli.theme import COLORS, MODEL_COLORS, SONNET_INPUT_PRICE, SONNET_OUTPUT_PRICE
+from opentf.cli.theme import COLORS, GLYPHS, MODEL_COLORS, gradient_text
 from opentf.llm.registry import get_model_short_name
 
 
@@ -16,7 +16,7 @@ def _model_short(model: str) -> str:
 
 
 class HeaderBar(Static):
-    """Top bar: brand + model badge + metrics."""
+    """Top bar: gradient brand + model badge + metrics with box-drawing seps."""
 
     DEFAULT_CSS = f"""
     HeaderBar {{
@@ -36,6 +36,7 @@ class HeaderBar(Static):
         self._elapsed = ""
         self._timer_start: float = 0.0
         self._elapsed_timer = None
+        self._pulse_on: bool = True
 
     def on_mount(self) -> None:
         self._refresh()
@@ -56,8 +57,9 @@ class HeaderBar(Static):
         """Begin live elapsed time updates."""
         self._timer_start = time.monotonic()
         self._elapsed = "0s"
+        self._pulse_on = True
         self._refresh()
-        self._elapsed_timer = self.set_interval(1.0, self._tick_elapsed)
+        self._elapsed_timer = self.set_interval(0.5, self._tick_elapsed)
 
     def stop_timer(self) -> None:
         """Stop live elapsed updates and freeze the display."""
@@ -74,7 +76,7 @@ class HeaderBar(Static):
         self._refresh()
 
     def _tick_elapsed(self) -> None:
-        """Update elapsed display every second."""
+        """Update elapsed display and pulse indicator."""
         elapsed = time.monotonic() - self._timer_start
         if elapsed < 60:
             self._elapsed = f"{elapsed:.0f}s"
@@ -82,32 +84,38 @@ class HeaderBar(Static):
             mins = int(elapsed // 60)
             secs = int(elapsed % 60)
             self._elapsed = f"{mins}m{secs:02d}s"
+        self._pulse_on = not self._pulse_on
         self._refresh()
 
     def _refresh(self) -> None:
         short = _model_short(self._model)
         badge_color = MODEL_COLORS.get(short, COLORS["text_dim"])
+        sep = f" [{COLORS['text_muted']}]{GLYPHS['sep']}[/] "
 
-        left = f"[bold {COLORS['accent']}]OpenTF[/]"
+        # Gradient brand
+        left = gradient_text("OpenTF")
 
-        parts = []
-        # Model badge
-        parts.append(f"[{badge_color}]{short}[/]")
+        parts: list[str] = []
+        # Model badge with color
+        parts.append(f"[bold {badge_color}] {short} [/]")
         # Token count
         if self._tokens:
+            diamond = GLYPHS["diamond"]
             if self._tokens >= 1000:
-                parts.append(f"[{COLORS['text_dim']}]{self._tokens / 1000:.1f}k tokens[/]")
+                parts.append(f"[{COLORS['text_dim']}]{diamond} {self._tokens / 1000:.1f}k[/]")
             else:
-                parts.append(f"[{COLORS['text_dim']}]{self._tokens} tokens[/]")
+                parts.append(f"[{COLORS['text_dim']}]{diamond} {self._tokens}[/]")
         # Cost
         if self._cost > 0:
-            parts.append(f"[{COLORS['text_dim']}]${self._cost:.4f}[/]")
+            parts.append(f"[{COLORS['accent2']}]${self._cost:.4f}[/]")
         # $/hr rate
         if self._rate > 0:
             parts.append(f"[{COLORS['text_dim']}]${self._rate:.2f}/hr[/]")
-        # Elapsed
+        # Elapsed with pulse
         if self._elapsed:
-            parts.append(f"[{COLORS['text_muted']}]{self._elapsed}[/]")
+            pulse = GLYPHS["bullet"] if self._pulse_on else GLYPHS["bullet_empty"]
+            pulse_color = COLORS["accent"] if self._pulse_on else COLORS["text_muted"]
+            parts.append(f"[{pulse_color}]{pulse}[/] [{COLORS['text_muted']}]{self._elapsed}[/]")
 
-        right = f" [{COLORS['text_muted']}]|[/] ".join(parts)
+        right = sep.join(parts) if parts else ""
         self.update(f"{left}    {right}")

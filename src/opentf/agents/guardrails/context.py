@@ -110,6 +110,8 @@ class ContextAgent(BaseAgent):
             )
             enrichments["workspace_root"] = str(self._workspace.root)
             enrichments["test_command"] = self._workspace.test_command
+            if self._workspace.repo_map_text:
+                enrichments["repo_map"] = self._workspace.repo_map_text
 
         # 6. Context summary for the specialist
         enrichments["context_summary"] = self._build_summary(

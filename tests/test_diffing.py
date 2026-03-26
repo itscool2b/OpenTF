@@ -108,14 +108,14 @@ async def test_edit_file_raises_with_diff(sandbox: Path) -> None:
 async def test_edit_missing_file_diff_message(sandbox: Path) -> None:
     missing = sandbox / "nope.py"
 
-    with pytest.raises(ApprovalRequired) as exc_info:
-        await handle_edit_file({
-            "path": str(missing),
-            "old_text": "x",
-            "new_text": "y",
-        })
+    # Missing file now returns error string instead of raising ApprovalRequired
+    result = await handle_edit_file({
+        "path": str(missing),
+        "old_text": "x",
+        "new_text": "y",
+    })
 
-    assert "not found" in exc_info.value.diff_text
+    assert "not found" in result.lower()
 
 
 # --- Diff content safety ---

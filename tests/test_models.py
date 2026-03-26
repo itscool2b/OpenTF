@@ -88,9 +88,10 @@ def test_plan_completion_summary() -> None:
         ],
     )
     summary = plan.format_completion_summary()
-    assert "PLAN COMPLETE" in summary
-    assert "1/1" in summary
-    assert "[x]" in summary
+    # Title chars are gradient-wrapped; check for step data and glyphs
+    assert "1 done" in summary
+    assert "●" in summary  # done step icon
+    assert "1.1" in summary
 
 
 def test_plan_failed_summary() -> None:
@@ -108,9 +109,10 @@ def test_plan_failed_summary() -> None:
         ],
     )
     summary = plan.format_completion_summary()
-    assert "PLAN FAILED" in summary
+    # Title is gradient-wrapped; check for step data and error text
     assert "1 done" in summary
     assert "1 failed" in summary
+    assert "something broke" in summary
 
 
 def test_message_creation() -> None:
