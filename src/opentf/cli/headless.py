@@ -42,7 +42,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--model", "-m",
         type=str,
         default=None,
-        help="Model to use (e.g. sonnet, gpt-4o, llama3.1)",
+        help="Model to use (e.g. sonnet-4.6, gpt-4.1, llama3.3)",
     )
     parser.add_argument(
         "--provider",

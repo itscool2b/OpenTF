@@ -25,17 +25,26 @@ OpenTF reads, writes, and edits code in your project. It runs shell commands, se
 
 | Command | Description |
 |---------|-------------|
+| `/taskforce` | Spawn parallel agent swarm for complex tasks |
 | `/plan` | Create a structured execution plan |
 | `/janitor` | Scan code for quality issues |
-| `/model` | Switch between Claude models |
+| `/model` | Switch model (opus-4.6, sonnet-4.6, gpt-4.1, o3, etc.) |
 | `/provider` | Switch between Anthropic / OpenAI / Ollama |
-| `/compact` | Compress conversation history |
+| `/theme` | Switch color theme |
+| `/skill` | Manage reusable skills |
 | `/save` | Save session |
 | `/resume` | Resume a saved session |
+| `/new` | Start a new session |
+| `/sessions` | List saved sessions |
 | `/undo` | Undo last file change |
+| `/review` | Toggle manual review for file changes |
+| `/compact` | Compress conversation history |
+| `/copy` | Copy last response to clipboard |
+| `/export` | Export conversation to markdown file |
 | `/cost` | Show token usage and cost |
-| `/status` | Show current session info |
-| `/login` | Set API key |
+| `/status` | Show auth, model, and token usage |
+| `/login` | Set API key or session token |
+| `/logout` | Clear stored credentials |
 | `/clear` | Clear conversation |
 | `/exit` | Quit |
 

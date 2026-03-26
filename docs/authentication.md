@@ -2,22 +2,27 @@
 
 ## Overview
 
-OpenTF requires an Anthropic API key to function. The key is resolved automatically from multiple sources and stored securely when entered through the CLI.
+OpenTF supports multiple LLM providers: **Anthropic** (Claude), **OpenAI** (GPT), and **Ollama** (local). For Anthropic, both API keys and Claude.ai session tokens are accepted.
 
-## API Key Resolution
+## Credential Resolution
 
-Keys are checked in this order (first match wins):
+Credentials are checked per provider in this order (first match wins):
 
-1. **`ANTHROPIC_API_KEY` environment variable** -- highest priority, overrides everything
+1. **Environment variable** -- highest priority
+   - Anthropic: `ANTHROPIC_API_KEY`
+   - OpenAI: `OPENAI_API_KEY`
+   - Ollama: no key needed
 2. **`~/.config/opentf/credentials.json`** -- stored by the CLI on first run
 
 ## First-Run Setup
 
-When you launch `opentf` without a configured key:
+When you launch `opentf` without a configured credential:
 
-1. The onboarding screen appears asking for your Anthropic API key
-2. Get a key at [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys)
-3. Paste it in (input is masked)
+1. Choose your LLM provider (Anthropic, OpenAI, or Ollama)
+2. For Anthropic: enter your API key (`sk-ant-...`) or Claude session token
+3. For OpenAI: enter your API key (`sk-...`)
+4. For Ollama: no key needed (connects to local server)
+5. Paste it in (input is masked)
 4. OpenTF validates the key with a lightweight API call
 5. On success, the key is stored and the main UI loads
 

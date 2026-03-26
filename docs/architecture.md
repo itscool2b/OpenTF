@@ -158,6 +158,41 @@ See `docs/authentication.md` for details.
 | sentence-transformers | Local embeddings (all-MiniLM-L6-v2) |
 | rank-bm25 | BM25 keyword search |
 
+## Coding Pipeline (v0.1.3)
+
+### Edit Engine (`src/opentf/tools/edit_engine.py`)
+
+9-strategy matching pipeline for reliable code edits:
+exact -> line_trimmed -> whitespace_normalized -> indentation_flexible -> escape_normalized -> block_anchor -> levenshtein -> fuzzy -> line_range
+
+### Tool Loop (`src/opentf/core/tool_loop.py`)
+
+Multi-turn LLM conversation loop with tool execution:
+- Three-tier termination: soft limit (80%), stuck detection (5-iter window), hard limit
+- Token budget tracking (150K default), auto-compaction at 95% capacity
+- Parallel execution for read-only tools, sequential for writes
+- Smart truncation preserving error/warning lines
+
+### LSP Integration (`src/opentf/tools/lsp_client.py`)
+
+Post-edit diagnostics: after every edit/write, collects type errors from language servers (pyright, typescript-language-server) and feeds them back to the LLM.
+
+### Subagent System (`src/opentf/core/subagent.py`)
+
+Isolated context windows for parallel subtasks. Git worktree isolation (`src/opentf/core/worktree.py`) prevents concurrent agents from clobbering each other's files.
+
+### TaskForce (`src/opentf/core/taskforce.py`)
+
+Parallel specialist agent swarm. Decomposes plans into waves, runs agents in parallel per wave, integrates results, validates, and runs a deterministic security review scanning all touched files.
+
+### Repo Map (`src/opentf/core/repo_map.py`)
+
+Tree-sitter parsing + PageRank ranking of symbols. Optional semantic indexing via sentence-transformers embeddings.
+
+### Multi-Provider LLM (`src/opentf/llm/`)
+
+Supports Anthropic (Claude), OpenAI (GPT), and Ollama (local models). 18 models registered with per-million-token pricing. Claude.ai session tokens supported alongside API keys.
+
 ## Design Decisions
 
 | Decision | Rationale |
