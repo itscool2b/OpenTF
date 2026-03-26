@@ -50,6 +50,7 @@ class Blueprint(BaseModel):
     specialists: list[Specialist] = []
     waves: list[list[str]] = []  # [[specialist names in wave], ...]
     status: str = "draft"
+    security_findings: list[str] = []
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     def format_display(self) -> str:

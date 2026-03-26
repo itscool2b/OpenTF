@@ -48,6 +48,18 @@ class PromptInput(Input):
         self._history_index = -1
 
     def _on_key(self, event: events.Key) -> None:
+        # When typing a slash command and pressing Down, focus the palette
+        if event.key == "down" and self.value.startswith("/"):
+            try:
+                from opentf.cli.widgets.command_palette import CommandPalette
+                palette = self.app.query_one(CommandPalette)
+                if palette.display:
+                    palette.focus_list()
+                    event.prevent_default()
+                    return
+            except Exception:
+                pass
+
         if event.key == "up" and self._history:
             if self._history_index == -1:
                 self._history_index = len(self._history) - 1

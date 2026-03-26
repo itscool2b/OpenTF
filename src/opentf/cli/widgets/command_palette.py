@@ -1,4 +1,4 @@
-"""Dark, minimal command palette with search filtering and category icons."""
+"""Dark, minimal command palette with search filtering, arrow key navigation, and category icons."""
 
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ class CommandSelected(Message):
 
 
 class CommandPalette(Vertical):
-    """Dark, filterable command palette overlay with category icons."""
+    """Dark, filterable command palette overlay with arrow key navigation."""
 
     DEFAULT_CSS = f"""
     CommandPalette {{
@@ -88,7 +88,8 @@ class CommandPalette(Vertical):
     }}
     """
 
-    can_focus = False
+    can_focus = True
+    can_focus_children = True
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -101,12 +102,13 @@ class CommandPalette(Vertical):
         yield OptionList(*options, id="cmd-options")
 
     def _build_options(self, query: str) -> list[Option]:
-        """Build filtered option list with category icons."""
+        """Build filtered option list with prefix matching."""
         options: list[Option] = []
         for item in self._all_commands:
             cmd, desc = item[0], item[1]
             icon = item[2] if len(item) > 2 else GLYPHS["dot"]
-            if query and query not in cmd:
+            # Prefix match: /th matches /theme but not /health
+            if query and not cmd.startswith("/" + query):
                 continue
             label = (
                 f"[{COLORS['text_muted']}]{icon}[/] "
@@ -126,8 +128,15 @@ class CommandPalette(Vertical):
         except Exception:
             pass
 
+    def focus_list(self) -> None:
+        """Focus the option list for keyboard navigation."""
+        try:
+            self.query_one("#cmd-options", OptionList).focus()
+        except Exception:
+            pass
+
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        """User selected a command."""
+        """User selected a command (Enter key or click)."""
         command = str(event.option_id)
         self.post_message(CommandSelected(command=command))
         self.display = False

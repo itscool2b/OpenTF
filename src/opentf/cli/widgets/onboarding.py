@@ -1,12 +1,12 @@
-"""Onboarding screen for API key setup with gradient logo and animated validation."""
+"""Onboarding screen with provider selection and API key setup."""
 
 from __future__ import annotations
 
 from textual import on
 from textual.app import ComposeResult
-from textual.containers import Center, Middle, Vertical
+from textual.containers import Center, Horizontal, Middle, Vertical
 from textual.message import Message
-from textual.widgets import Input, Static
+from textual.widgets import Button, Input, Static
 
 from opentf.cli.theme import COLORS, GLYPHS, SPINNERS, gradient_text
 from opentf.cli.renderables import banner_art
@@ -22,7 +22,7 @@ class OnboardingComplete(Message):
 
 
 class OnboardingScreen(Vertical):
-    """First-run screen prompting for an API key with gradient branding."""
+    """First-run screen: choose provider, then enter API key."""
 
     DEFAULT_CSS = f"""
     OnboardingScreen {{
@@ -30,9 +30,9 @@ class OnboardingScreen(Vertical):
         align: center middle;
     }}
     OnboardingScreen #onboard-box {{
-        width: 56;
+        width: 60;
         height: auto;
-        max-height: 22;
+        max-height: 26;
         padding: 1 3;
         border: round {COLORS['border']};
         background: {COLORS['surface']};
@@ -66,36 +66,102 @@ class OnboardingScreen(Vertical):
         height: 1;
         margin-top: 1;
     }}
+    OnboardingScreen .provider-buttons {{
+        align: center middle;
+        height: auto;
+        margin-top: 1;
+        margin-bottom: 1;
+    }}
+    OnboardingScreen Button {{
+        margin: 0 1;
+        min-width: 16;
+    }}
+    OnboardingScreen #provider-section {{
+        height: auto;
+    }}
+    OnboardingScreen #key-section {{
+        height: auto;
+        display: none;
+    }}
     """
 
-    def __init__(self, provider: str = "anthropic", **kwargs) -> None:
+    def __init__(self, provider: str = "", **kwargs) -> None:
         super().__init__(**kwargs)
-        self._provider = provider
+        self._provider = provider  # If set, skip provider selection
         self._validating = False
         self._spinner_frame = 0
         self._spinner_timer = None
 
     def compose(self) -> ComposeResult:
-        if self._provider == "anthropic":
-            info_text = "Enter your Anthropic API key to get started."
-            link_text = "console.anthropic.com/settings/keys"
-        elif self._provider == "openai":
-            info_text = "Enter your OpenAI API key to get started."
-            link_text = "platform.openai.com/api-keys"
-        else:
-            info_text = f"Enter your {self._provider} API key to get started."
-            link_text = ""
-
         with Center():
             with Middle():
                 with Vertical(id="onboard-box"):
                     yield Static(banner_art(), classes="brand")
-                    yield Static(info_text, classes="info")
-                    if link_text:
-                        yield Static(link_text, classes="link")
-                    yield Input(placeholder="Paste your API key here", password=True, id="key-input")
-                    yield Static("", id="feedback")
-                    yield Static("Stored at ~/.config/opentf/credentials.json", classes="dim")
+
+                    # Provider selection (shown first if no provider pre-set)
+                    with Vertical(id="provider-section"):
+                        yield Static("Choose your LLM provider:", classes="info")
+                        with Horizontal(classes="provider-buttons"):
+                            yield Button("Anthropic", id="btn-anthropic", variant="primary")
+                            yield Button("OpenAI", id="btn-openai")
+                            yield Button("Ollama", id="btn-ollama")
+
+                    # API key entry (shown after provider is selected)
+                    with Vertical(id="key-section"):
+                        yield Static("", id="key-info", classes="info")
+                        yield Static("", id="key-link", classes="link")
+                        yield Input(placeholder="Paste your API key here", password=True, id="key-input")
+                        yield Static("", id="feedback")
+                        yield Static("Stored at ~/.config/opentf/credentials.json", classes="dim")
+
+    def on_mount(self) -> None:
+        """If provider was pre-set, skip to key entry."""
+        if self._provider:
+            self._show_key_entry(self._provider)
+
+    def _show_key_entry(self, provider: str) -> None:
+        """Transition from provider selection to key entry."""
+        self._provider = provider
+
+        try:
+            self.query_one("#provider-section").display = False
+            key_section = self.query_one("#key-section")
+            key_section.display = True
+        except Exception:
+            return
+
+        if provider == "anthropic":
+            info_text = "Enter your Anthropic API key to get started."
+            link_text = "console.anthropic.com/settings/keys"
+        elif provider == "openai":
+            info_text = "Enter your OpenAI API key to get started."
+            link_text = "platform.openai.com/api-keys"
+        elif provider == "ollama":
+            # Ollama doesn't need a key — just connect
+            self.post_message(OnboardingComplete(api_key="", provider="ollama"))
+            return
+        else:
+            info_text = f"Enter your {provider} API key to get started."
+            link_text = ""
+
+        try:
+            self.query_one("#key-info", Static).update(info_text)
+            self.query_one("#key-link", Static).update(link_text)
+            self.query_one("#key-input", Input).focus()
+        except Exception:
+            pass
+
+    @on(Button.Pressed, "#btn-anthropic")
+    def on_anthropic(self) -> None:
+        self._show_key_entry("anthropic")
+
+    @on(Button.Pressed, "#btn-openai")
+    def on_openai(self) -> None:
+        self._show_key_entry("openai")
+
+    @on(Button.Pressed, "#btn-ollama")
+    def on_ollama(self) -> None:
+        self._show_key_entry("ollama")
 
     def _start_spinner(self) -> None:
         self._validating = True

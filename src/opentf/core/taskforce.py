@@ -124,6 +124,15 @@ class TaskForce:
         await self._validate(blueprint)
         await self._notify("validator", "done", "validation complete")
 
+        # Security review (always runs last -- deterministic, no LLM)
+        await self._notify("security", "active", "scanning for vulnerabilities...")
+        security_findings = await self._security_review(blueprint)
+        if security_findings:
+            await self._notify("security", "done", f"{len(security_findings)} findings")
+            blueprint.security_findings = security_findings
+        else:
+            await self._notify("security", "done", "no issues found")
+
         blueprint.status = "completed"
         return blueprint
 
@@ -201,7 +210,7 @@ class TaskForce:
             )
             tasks.append(self._run_specialist(spec, description))
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)  # type: ignore[arg-type]
 
         for spec, result in zip(specialists, results):
             components = [c for c in blueprint.components if c.specialist == spec.name]
@@ -261,6 +270,52 @@ class TaskForce:
         )
         messages = [{"role": "user", "content": "Validate the project. Run tests and report results."}]
         await loop.run(messages=messages, system=VALIDATE_PROMPT, temperature=0.3)
+
+    async def _security_review(self, blueprint: Blueprint) -> list[str]:
+        """Deterministic security review of all files touched during taskforce.
+
+        Scans for: hardcoded secrets, command injection, SQL injection, XSS,
+        eval/exec, insecure imports, path traversal. No LLM needed.
+        """
+        from opentf.agents.guardrails.security import scan_file_content
+        from pathlib import Path
+
+        # Collect files touched by scanning component outputs
+        touched_files: set[str] = set()
+        pattern = re.compile(r"(?:Edited|Written|Created|Applied)\s+(\S+)")
+        for comp in blueprint.components:
+            if comp.output:
+                for match in pattern.finditer(comp.output):
+                    touched_files.add(match.group(1))
+
+        # Also scan all files in the working directory that were recently modified
+        # (within the last 10 minutes -- covers taskforce execution window)
+        import time
+        cutoff = time.time() - 600
+        try:
+            for p in Path.cwd().rglob("*"):
+                if p.is_file() and p.stat().st_mtime > cutoff and not any(
+                    seg in str(p) for seg in (".git", "__pycache__", ".opentf", "node_modules")
+                ):
+                    touched_files.add(str(p))
+        except Exception:
+            pass
+
+        findings: list[str] = []
+        for fpath in sorted(touched_files):
+            try:
+                path = Path(fpath)
+                if not path.exists() or not path.is_file():
+                    continue
+                if path.stat().st_size > 500_000:
+                    continue  # Skip very large files
+                content = path.read_text(errors="replace")
+                file_findings = scan_file_content(content, str(path))
+                findings.extend(file_findings)
+            except Exception:
+                continue
+
+        return findings
 
     # --- Utilities ---
 

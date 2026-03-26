@@ -571,7 +571,9 @@ class ToolLoop:
         ))
 
         try:
-            await approval_event.wait()
+            await asyncio.wait_for(approval_event.wait(), timeout=30)
+        except asyncio.TimeoutError:
+            log.warning("Approval timeout for: %s (auto-denied after 30s)", command)
         finally:
             self.bus.unsubscribe(MessageType.APPROVAL_GRANTED, on_granted)
             self.bus.unsubscribe(MessageType.APPROVAL_DENIED, on_denied)

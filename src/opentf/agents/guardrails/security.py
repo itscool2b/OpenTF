@@ -156,3 +156,59 @@ class SecurityAgent(BaseAgent):
                 )
 
         return AgentResult(success=True, output={"security_cleared": True})
+
+
+# --- File content security scanning (reusable by TaskForce) ---
+
+# Patterns for scanning generated/modified code
+_CODE_SECURITY_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
+    # Hardcoded secrets
+    (re.compile(r"""(?:api[_-]?key|secret|password|token|auth)\s*[=:]\s*["'][^"']{8,}["']""", re.IGNORECASE),
+     "hardcoded_secret", "Possible hardcoded secret or API key"),
+    (re.compile(r"""sk-[a-zA-Z0-9]{20,}"""), "api_key_exposed", "Exposed API key pattern (sk-...)"),
+    (re.compile(r"""ghp_[a-zA-Z0-9]{36}"""), "github_token", "GitHub personal access token"),
+    (re.compile(r"""-----BEGIN (?:RSA |EC )?PRIVATE KEY-----"""), "private_key", "Private key in source"),
+
+    # Dangerous code patterns
+    (re.compile(r"""\beval\s*\("""), "eval_usage", "Use of eval() -- potential code injection"),
+    (re.compile(r"""\bexec\s*\("""), "exec_usage", "Use of exec() -- potential code injection"),
+    (re.compile(r"""__import__\s*\("""), "dynamic_import", "Dynamic import -- potential code injection"),
+    (re.compile(r"""\bos\.system\s*\("""), "os_system", "os.system() -- use subprocess instead"),
+    (re.compile(r"""subprocess\..*shell\s*=\s*True"""), "shell_true", "subprocess with shell=True -- command injection risk"),
+
+    # SQL injection
+    (re.compile(r"""f["'].*(?:SELECT|INSERT|UPDATE|DELETE|DROP).*\{""", re.IGNORECASE),
+     "sql_injection", "SQL query built with f-string -- use parameterized queries"),
+    (re.compile(r"""["'].*(?:SELECT|INSERT|UPDATE|DELETE|DROP).*["']\s*%""", re.IGNORECASE),
+     "sql_injection_pct", "SQL query with % formatting -- use parameterized queries"),
+
+    # XSS
+    (re.compile(r"""innerHTML\s*="""), "xss_innerhtml", "innerHTML assignment -- XSS risk"),
+    (re.compile(r"""document\.write\s*\("""), "xss_docwrite", "document.write() -- XSS risk"),
+    (re.compile(r"""\bMarkup\s*\(.*\{"""), "xss_markup", "Unescaped markup interpolation"),
+
+    # Path traversal
+    (re.compile(r"""open\s*\(.*\+.*\)"""), "path_concat", "File open with string concatenation -- path traversal risk"),
+
+    # Insecure
+    (re.compile(r"""verify\s*=\s*False"""), "ssl_verify_false", "SSL verification disabled"),
+    (re.compile(r"""chmod\s+777"""), "chmod_777", "chmod 777 -- world-writable permissions"),
+    (re.compile(r"""0\.0\.0\.0"""), "bind_all", "Binding to 0.0.0.0 -- exposed to all interfaces"),
+]
+
+
+def scan_file_content(content: str, file_path: str) -> list[str]:
+    """Scan file content for security issues. Returns list of finding strings.
+
+    Used by TaskForce security review and can be used standalone.
+    """
+    findings: list[str] = []
+    lines = content.splitlines()
+
+    for pattern, code, description in _CODE_SECURITY_PATTERNS:
+        for i, line in enumerate(lines, 1):
+            if pattern.search(line):
+                findings.append(f"  [{code}] {file_path}:{i} -- {description}")
+                break  # One finding per pattern per file
+
+    return findings

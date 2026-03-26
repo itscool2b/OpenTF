@@ -176,7 +176,8 @@ class OpenTFApp(App):
             yield from self._compose_main()
         else:
             self._needs_onboarding = True
-            yield OnboardingScreen(provider=provider, id="onboarding")
+            # Don't pre-set provider — let user choose on first boot
+            yield OnboardingScreen(id="onboarding")
 
     def _compose_main(self) -> ComposeResult:
         yield OutputDisplay(id="output")
@@ -242,10 +243,13 @@ class OpenTFApp(App):
 
     @on(OnboardingComplete)
     async def on_onboarding_complete(self, event: OnboardingComplete) -> None:
-        self.credentials.store_api_key(event.api_key, provider=event.provider)
-        self.llm.api_key = event.api_key
+        if event.api_key:  # Ollama doesn't need a key
+            self.credentials.store_api_key(event.api_key, provider=event.provider)
+        self.llm.api_key = event.api_key or ""
         self.llm.provider_name = event.provider
+        self.llm.model = get_default_model(event.provider)
         self.llm.reset_client()
+        self.query_one(HeaderBar).update_model(self.llm.model)
 
         onboarding = self.query_one("#onboarding")
         await onboarding.remove()
@@ -286,6 +290,7 @@ class OpenTFApp(App):
             palette.display = False
             prompt = self.query_one(PromptInput)
             prompt.value = ""
+            prompt.focus()
         except Exception:
             pass
         await self._handle_command(event.command)
@@ -838,6 +843,82 @@ class OpenTFApp(App):
             self.credentials.clear_credentials()
             await output.append_text(f"Credentials cleared. [{_A}]/login[/] to set a new key.")
 
+        elif command == "/theme":
+            from opentf.cli.theme import THEMES, set_theme, CURRENT_THEME
+            parts = cmd.split(maxsplit=1)
+            if len(parts) < 2:
+                names = list(THEMES.keys())
+                lines = [f"[bold]Themes[/] [{_D}](current: {CURRENT_THEME})[/]\n"]
+                for name in names:
+                    marker = f"[{_A}]*[/] " if name == CURRENT_THEME else "  "
+                    lines.append(f"  {marker}[bold]{name}[/]")
+                await output.append_text("\n".join(lines))
+            else:
+                name = parts[1].strip().lower()
+                if name not in THEMES:
+                    available = ", ".join(f"[{_A}]{n}[/]" for n in THEMES)
+                    await output.append_text(f"Unknown theme: {name}. Available: {available}")
+                else:
+                    set_theme(name)
+                    await output.append_text(f"Theme set to [bold]{name}[/]. Restart for full effect.")
+
+        elif command == "/copy":
+            import subprocess as _sp
+            import shutil as _sh
+            # Find last assistant message
+            last_response = ""
+            for msg in reversed(self.conversation_history):
+                if msg.get("role") == "assistant":
+                    content = msg.get("content", "")
+                    if isinstance(content, list):
+                        last_response = " ".join(
+                            b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
+                        )
+                    else:
+                        last_response = str(content)
+                    break
+            if not last_response:
+                await output.append_text("No response to copy.")
+            else:
+                try:
+                    if _sh.which("xclip"):
+                        proc = _sp.Popen(["xclip", "-selection", "clipboard"], stdin=_sp.PIPE)
+                        proc.communicate(last_response.encode())
+                    elif _sh.which("xsel"):
+                        proc = _sp.Popen(["xsel", "--clipboard", "--input"], stdin=_sp.PIPE)
+                        proc.communicate(last_response.encode())
+                    elif _sh.which("pbcopy"):
+                        proc = _sp.Popen(["pbcopy"], stdin=_sp.PIPE)
+                        proc.communicate(last_response.encode())
+                    else:
+                        await output.append_text("No clipboard tool found (install xclip, xsel, or use macOS).")
+                        return
+                    await output.append_text(f"Copied {len(last_response)} chars to clipboard.")
+                except Exception as exc:
+                    await output.append_text(f"[{_E}]Copy failed:[/] {exc}")
+
+        elif command == "/export":
+            from datetime import datetime as _dt
+            parts = cmd.split(maxsplit=1)
+            filename = parts[1].strip() if len(parts) > 1 else f"opentf-export-{_dt.now().strftime('%Y%m%d-%H%M%S')}.md"
+            if not self.conversation_history:
+                await output.append_text("Nothing to export -- conversation is empty.")
+            else:
+                lines = [f"# OpenTF Export\n"]
+                for msg in self.conversation_history:
+                    role = msg.get("role", "unknown")
+                    content = msg.get("content", "")
+                    if isinstance(content, list):
+                        text = " ".join(
+                            b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
+                        )
+                    else:
+                        text = str(content)
+                    lines.append(f"## {role.title()}\n\n{text}\n")
+                from pathlib import Path as _P
+                _P(filename).write_text("\n".join(lines))
+                await output.append_text(f"Exported {len(self.conversation_history)} messages to [bold]{filename}[/]")
+
         elif command == "/clear":
             self.action_clear()
 
@@ -1242,6 +1323,46 @@ class OpenTFApp(App):
 
         self.bus.subscribe(MessageType.TOOL_INVOKED, on_bus_tool)
         self.bus.subscribe(MessageType.TOOL_RESULT, on_bus_tool)
+
+        # Auto-approve safe commands in taskforce mode (prevents hang)
+        from opentf.tools.file_tools import CODE_SAFE_COMMANDS, is_session_allowed
+
+        async def on_taskforce_approval(msg) -> None:
+            """Auto-approve safe commands during taskforce. Dangerous ones get denied."""
+            try:
+                command = msg.payload.get("command", "")
+                tool_id = msg.payload.get("tool_id", "")
+                cmd_stripped = command.strip()
+
+                # Auto-approve safe commands and session-allowed commands
+                is_safe = any(cmd_stripped.startswith(safe) for safe in CODE_SAFE_COMMANDS)
+                if is_safe or is_session_allowed(command):
+                    await self.bus.publish(Message(
+                        type=MessageType.APPROVAL_GRANTED,
+                        source="taskforce_ui",
+                        payload={"tool_id": tool_id},
+                    ))
+                    try:
+                        display = self.query_one(TaskForceDisplay)
+                        display.live.log_tool(msg.source, "approved", command[:60])
+                    except Exception:
+                        pass
+                else:
+                    # Deny dangerous commands in taskforce (agent should use safe alternatives)
+                    await self.bus.publish(Message(
+                        type=MessageType.APPROVAL_DENIED,
+                        source="taskforce_ui",
+                        payload={"tool_id": tool_id},
+                    ))
+                    try:
+                        display = self.query_one(TaskForceDisplay)
+                        display.live.log_result(msg.source, "denied", False, command[:60])
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        self.bus.subscribe(MessageType.APPROVAL_REQUESTED, on_taskforce_approval)
 
         blueprint = None
         try:
