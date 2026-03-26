@@ -9,44 +9,60 @@ from __future__ import annotations
 
 MODEL_REGISTRY: dict[str, dict[str, str]] = {
     "anthropic": {
-        "opus": "claude-opus-4-20250514",
-        "sonnet": "claude-sonnet-4-20250514",
-        "haiku": "claude-haiku-4-5-20251001",
+        "opus-4.6":   "claude-opus-4-6-20250515",
+        "sonnet-4.6": "claude-sonnet-4-6-20250514",
+        "sonnet":     "claude-sonnet-4-20250514",
+        "haiku":      "claude-haiku-4-5-20251001",
+        "haiku-3.5":  "claude-3-5-haiku-20241022",
     },
     "openai": {
-        "gpt-4o": "gpt-4o",
-        "gpt-4o-mini": "gpt-4o-mini",
-        "o1": "o1",
+        "gpt-4.1":      "gpt-4.1",
+        "gpt-4.1-mini": "gpt-4.1-mini",
+        "gpt-4.1-nano": "gpt-4.1-nano",
+        "gpt-4o":       "gpt-4o",
+        "gpt-4o-mini":  "gpt-4o-mini",
+        "o3":           "o3",
+        "o3-mini":      "o3-mini",
+        "o4-mini":      "o4-mini",
     },
     "ollama": {
-        "llama3.1": "llama3.1",
-        "codellama": "codellama",
-        "mistral": "mistral",
-        "qwen2.5-coder": "qwen2.5-coder",
+        "llama3.3":          "llama3.3",
+        "deepseek-coder-v2": "deepseek-coder-v2",
+        "codellama":         "codellama",
+        "qwen2.5-coder":     "qwen2.5-coder",
+        "mistral":           "mistral",
     },
 }
 
 # Pricing per million tokens
 MODEL_PRICING: dict[str, dict[str, float]] = {
     # Anthropic
-    "claude-opus-4-20250514":     {"input": 15.0,  "output": 75.0},
-    "claude-sonnet-4-20250514":   {"input": 3.0,   "output": 15.0},
-    "claude-haiku-4-5-20251001":  {"input": 0.80,  "output": 4.0},
+    "claude-opus-4-6-20250515":    {"input": 15.0,  "output": 75.0},
+    "claude-sonnet-4-6-20250514":  {"input": 3.0,   "output": 15.0},
+    "claude-sonnet-4-20250514":    {"input": 3.0,   "output": 15.0},
+    "claude-haiku-4-5-20251001":   {"input": 0.80,  "output": 4.0},
+    "claude-3-5-haiku-20241022":   {"input": 0.80,  "output": 4.0},
     # OpenAI
-    "gpt-4o":      {"input": 2.50,  "output": 10.0},
-    "gpt-4o-mini": {"input": 0.15,  "output": 0.60},
-    "o1":          {"input": 15.0,  "output": 60.0},
+    "gpt-4.1":      {"input": 2.0,   "output": 8.0},
+    "gpt-4.1-mini": {"input": 0.40,  "output": 1.60},
+    "gpt-4.1-nano": {"input": 0.10,  "output": 0.40},
+    "gpt-4o":       {"input": 2.50,  "output": 10.0},
+    "gpt-4o-mini":  {"input": 0.15,  "output": 0.60},
+    "o3":           {"input": 10.0,  "output": 40.0},
+    "o3-mini":      {"input": 1.10,  "output": 4.40},
+    "o4-mini":      {"input": 1.10,  "output": 4.40},
     # Ollama (local, free)
-    "llama3.1":        {"input": 0.0, "output": 0.0},
-    "codellama":       {"input": 0.0, "output": 0.0},
-    "mistral":         {"input": 0.0, "output": 0.0},
-    "qwen2.5-coder":   {"input": 0.0, "output": 0.0},
+    "llama3.3":          {"input": 0.0, "output": 0.0},
+    "deepseek-coder-v2": {"input": 0.0, "output": 0.0},
+    "codellama":         {"input": 0.0, "output": 0.0},
+    "qwen2.5-coder":     {"input": 0.0, "output": 0.0},
+    "mistral":           {"input": 0.0, "output": 0.0},
 }
 
 DEFAULT_MODELS: dict[str, str] = {
-    "anthropic": "claude-sonnet-4-20250514",
-    "openai": "gpt-4o",
-    "ollama": "llama3.1",
+    "anthropic": "claude-sonnet-4-6-20250514",
+    "openai": "gpt-4.1",
+    "ollama": "llama3.3",
 }
 
 PROVIDER_ENV_VARS: dict[str, str] = {

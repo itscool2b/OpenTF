@@ -14,25 +14,35 @@ from opentf.llm.registry import MODEL_REGISTRY
 # Model descriptions for display
 MODEL_DESCRIPTIONS: dict[str, str] = {
     # Anthropic
-    "opus": "Most capable, complex tasks",
-    "sonnet": "Balanced speed and quality",
-    "haiku": "Fastest, lightweight tasks",
+    "opus-4.6":   "Most capable, complex reasoning (4.6)",
+    "sonnet-4.6": "Balanced speed and intelligence (4.6)",
+    "sonnet":     "Previous gen balanced (4.0)",
+    "haiku":      "Fastest, lightweight (4.5)",
+    "haiku-3.5":  "Budget, fast responses (3.5)",
     # OpenAI
-    "gpt-4o": "Most capable GPT, multimodal",
-    "gpt-4o-mini": "Fast and affordable",
-    "o1": "Advanced reasoning",
+    "gpt-4.1":      "Latest GPT, strong coding",
+    "gpt-4.1-mini": "Fast and affordable GPT",
+    "gpt-4.1-nano": "Cheapest GPT, simple tasks",
+    "gpt-4o":       "Multimodal GPT",
+    "gpt-4o-mini":  "Fast multimodal GPT",
+    "o3":           "Advanced reasoning",
+    "o3-mini":      "Fast reasoning",
+    "o4-mini":      "Latest reasoning, efficient",
     # Ollama
-    "llama3.1": "Meta Llama 3.1 (local)",
-    "codellama": "Code-focused Llama (local)",
-    "mistral": "Mistral (local)",
-    "qwen2.5-coder": "Qwen 2.5 Coder (local)",
+    "llama3.3":          "Meta Llama 3.3 (local)",
+    "deepseek-coder-v2": "DeepSeek Coder v2 (local)",
+    "codellama":         "Code-focused Llama (local)",
+    "mistral":           "Mistral (local)",
+    "qwen2.5-coder":     "Qwen 2.5 Coder (local)",
 }
 
 # Legacy compat: default models list for anthropic
 MODELS = [
-    ("opus", "claude-opus-4-20250514", "Most capable, complex tasks"),
-    ("sonnet", "claude-sonnet-4-20250514", "Balanced speed and quality"),
-    ("haiku", "claude-haiku-4-5-20251001", "Fastest, lightweight tasks"),
+    ("opus-4.6", "claude-opus-4-6-20250515", "Most capable, complex reasoning (4.6)"),
+    ("sonnet-4.6", "claude-sonnet-4-6-20250514", "Balanced speed and intelligence (4.6)"),
+    ("sonnet", "claude-sonnet-4-20250514", "Previous gen balanced (4.0)"),
+    ("haiku", "claude-haiku-4-5-20251001", "Fastest, lightweight (4.5)"),
+    ("haiku-3.5", "claude-3-5-haiku-20241022", "Budget, fast responses (3.5)"),
 ]
 
 

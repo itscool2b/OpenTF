@@ -729,9 +729,9 @@ class OpenTFApp(App):
             )
 
         elif command == "/cost":
-            from opentf.cli.widgets.status import _model_short
-            short = _model_short(self.llm.model)
-            prices = MODEL_PRICING.get(short, MODEL_PRICING["sonnet"])
+            from opentf.llm.registry import get_model_pricing, get_model_short_name
+            short = get_model_short_name(self.llm.model)
+            prices = get_model_pricing(self.llm.model)
             inp = self.llm.usage.input_tokens
             out = self.llm.usage.output_tokens
             cw = self.llm.usage.cache_write_tokens

@@ -1,6 +1,6 @@
 llm:
   provider: anthropic  # anthropic | openai | ollama
-  model: claude-sonnet-4-20250514
+  model: claude-sonnet-4-6-20250514
   max_tokens: 8192
   temperature: 0.7
   # openai_base_url: https://api.openai.com/v1
@@ -58,5 +58,5 @@ agents:
 
   code:
     enabled: true
-    model: claude-sonnet-4-20250514
+    model: claude-sonnet-4-6-20250514
     temperature: 0.3

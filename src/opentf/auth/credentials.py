@@ -102,15 +102,21 @@ class CredentialManager:
                 data = json.loads(self.credentials_file.read_text())
                 cred_key = PROVIDER_CRED_KEYS.get(provider, "")
                 if cred_key and data.get(cred_key):
+                    token_type = data.get(f"{provider}_token_type", "api_key")
+                    if token_type == "session_token":
+                        return "stored session token"
                     return "stored credential"
                 if provider == "anthropic" and data.get("api_key"):
+                    token_type = data.get("anthropic_token_type", "api_key")
+                    if token_type == "session_token":
+                        return "stored session token"
                     return "stored credential"
             except (json.JSONDecodeError, OSError):
                 pass
         return "not configured"
 
     def store_api_key(self, key: str, provider: str = "anthropic") -> None:
-        """Store API key to credentials.json with restricted permissions."""
+        """Store API key or session token to credentials.json with restricted permissions."""
         self._config_dir.mkdir(parents=True, exist_ok=True)
         self._config_dir.chmod(stat.S_IRWXU)
 
@@ -126,15 +132,19 @@ class CredentialManager:
         cred_key = PROVIDER_CRED_KEYS.get(provider, f"{provider}_api_key")
         existing[cred_key] = key
 
-        # Also store as "api_key" for backward compat if anthropic
+        # Detect and store token type for Anthropic
         if provider == "anthropic":
-            existing["api_key"] = key
+            existing["api_key"] = key  # Backward compat
+            if key.startswith("sk-ant-"):
+                existing["anthropic_token_type"] = "api_key"
+            else:
+                existing["anthropic_token_type"] = "session_token"
 
         data = json.dumps(existing, indent=2)
         self.credentials_file.write_text(data)
         self.credentials_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
-        log.info("API key for %s stored at %s", provider, self.credentials_file)
+        log.info("Credential for %s stored at %s", provider, self.credentials_file)
 
     def clear_credentials(self) -> None:
         """Delete the credential file."""
@@ -153,13 +163,16 @@ class CredentialManager:
 
     @staticmethod
     def validate_key_format(key: str, provider: str = "anthropic") -> bool:
-        """Basic format check for a provider's API key."""
+        """Basic format check for a provider's API key or session token."""
         key = key.strip()
         if not key:
             return False
         if provider == "anthropic":
+            # Accept API keys (sk-ant-...) and session tokens (various formats)
             if key.startswith("sk-ant-"):
                 return True
+            # Session tokens are typically long strings
+            return len(key) >= 20
         elif provider == "openai":
             if key.startswith("sk-"):
                 return True

@@ -110,7 +110,7 @@ class OnboardingScreen(Vertical):
                     with Vertical(id="key-section"):
                         yield Static("", id="key-info", classes="info")
                         yield Static("", id="key-link", classes="link")
-                        yield Input(placeholder="Paste your API key here", password=True, id="key-input")
+                        yield Input(placeholder="API key (sk-ant-...) or session token", password=True, id="key-input")
                         yield Static("", id="feedback")
                         yield Static("Stored at ~/.config/opentf/credentials.json", classes="dim")
 
@@ -131,7 +131,7 @@ class OnboardingScreen(Vertical):
             return
 
         if provider == "anthropic":
-            info_text = "Enter your Anthropic API key to get started."
+            info_text = "Enter your API key or Claude session token."
             link_text = "console.anthropic.com/settings/keys"
         elif provider == "openai":
             info_text = "Enter your OpenAI API key to get started."

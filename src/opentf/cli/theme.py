@@ -145,16 +145,27 @@ COLORS = dict(THEMES[_active_theme])
 
 # Model badge colors (theme-independent)
 MODEL_COLORS = {
-    "opus":       "#fabd2f",
+    # Anthropic
+    "opus-4.6":   "#fabd2f",
+    "sonnet-4.6": "#d3869b",
     "sonnet":     "#d3869b",
     "haiku":      "#8ec07c",
-    "gpt-4o":     "#74b9ff",
-    "gpt-4o-mini":"#a29bfe",
-    "o1":         "#fd79a8",
-    "llama3.1":       "#55efc4",
-    "codellama":      "#00cec9",
-    "mistral":        "#ffeaa7",
-    "qwen2.5-coder":  "#81ecec",
+    "haiku-3.5":  "#8ec07c",
+    # OpenAI
+    "gpt-4.1":      "#74b9ff",
+    "gpt-4.1-mini": "#a29bfe",
+    "gpt-4.1-nano": "#dfe6e9",
+    "gpt-4o":       "#74b9ff",
+    "gpt-4o-mini":  "#a29bfe",
+    "o3":           "#fd79a8",
+    "o3-mini":      "#fab1a0",
+    "o4-mini":      "#e17055",
+    # Ollama
+    "llama3.3":          "#55efc4",
+    "deepseek-coder-v2": "#00cec9",
+    "codellama":         "#00cec9",
+    "mistral":           "#ffeaa7",
+    "qwen2.5-coder":     "#81ecec",
 }
 
 # Spinner frames
@@ -169,22 +180,33 @@ SPINNERS = {
     "arrow":      ["▹", "▸", "▹", "▸"],
 }
 
-# Per-model pricing (per million tokens)
+# Per-model pricing (per million tokens, keyed by short name for UI)
 MODEL_PRICING = {
-    "opus":   {"input": 15.0, "output": 75.0},
-    "sonnet": {"input": 3.0,  "output": 15.0},
-    "haiku":  {"input": 0.80, "output": 4.0},
-    "gpt-4o":      {"input": 2.50, "output": 10.0},
-    "gpt-4o-mini": {"input": 0.15, "output": 0.60},
-    "o1":          {"input": 15.0, "output": 60.0},
-    "llama3.1":       {"input": 0.0, "output": 0.0},
-    "codellama":      {"input": 0.0, "output": 0.0},
-    "mistral":        {"input": 0.0, "output": 0.0},
-    "qwen2.5-coder":  {"input": 0.0, "output": 0.0},
+    # Anthropic
+    "opus-4.6":   {"input": 15.0, "output": 75.0},
+    "sonnet-4.6": {"input": 3.0,  "output": 15.0},
+    "sonnet":     {"input": 3.0,  "output": 15.0},
+    "haiku":      {"input": 0.80, "output": 4.0},
+    "haiku-3.5":  {"input": 0.80, "output": 4.0},
+    # OpenAI
+    "gpt-4.1":      {"input": 2.0,  "output": 8.0},
+    "gpt-4.1-mini": {"input": 0.40, "output": 1.60},
+    "gpt-4.1-nano": {"input": 0.10, "output": 0.40},
+    "gpt-4o":       {"input": 2.50, "output": 10.0},
+    "gpt-4o-mini":  {"input": 0.15, "output": 0.60},
+    "o3":           {"input": 10.0, "output": 40.0},
+    "o3-mini":      {"input": 1.10, "output": 4.40},
+    "o4-mini":      {"input": 1.10, "output": 4.40},
+    # Ollama (local, free)
+    "llama3.3":          {"input": 0.0, "output": 0.0},
+    "deepseek-coder-v2": {"input": 0.0, "output": 0.0},
+    "codellama":         {"input": 0.0, "output": 0.0},
+    "mistral":           {"input": 0.0, "output": 0.0},
+    "qwen2.5-coder":     {"input": 0.0, "output": 0.0},
 }
 
-SONNET_INPUT_PRICE = MODEL_PRICING["sonnet"]["input"]
-SONNET_OUTPUT_PRICE = MODEL_PRICING["sonnet"]["output"]
+SONNET_INPUT_PRICE = MODEL_PRICING["sonnet-4.6"]["input"]
+SONNET_OUTPUT_PRICE = MODEL_PRICING["sonnet-4.6"]["output"]
 
 
 # --- Box-drawing character sets ---
